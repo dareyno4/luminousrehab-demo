@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import type { MedicationInfo } from './utils/ocrService';
 import { AuthProvider } from './context/AuthContext';
 
 // Auth Screens
@@ -96,13 +97,14 @@ export interface NavigationParams {
   attachments?: File[];
   medicationData?: any;
   patientName?: string;
-  scannedMedications?: { name: string; dosage: string; frequency: string; route: string }[];
+  scannedMedications?: Partial<MedicationInfo>[];
   prefillData?: {
     firstName: string;
     lastName: string;
     dateOfBirth: string;
     medicalRecordNumber: string;
   };
+  prefillMedications?: any[];
   patient?: {
     first_name: string;
     last_name: string;

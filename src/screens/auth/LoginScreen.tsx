@@ -1,13 +1,14 @@
 import React, { useState } from 'react';
-import { Mail, Lock, Eye, EyeOff, ArrowLeft, Activity, Users, Building2, FileText, Shield } from 'lucide-react';
+import { Mail, Lock, Eye, EyeOff, ArrowLeft, Activity, Building2, FileText, Shield } from 'lucide-react';
 import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
 import { Button } from '../../components/ui/button';
 import { Checkbox } from '../../components/ui/checkbox';
 import { Screen, NavigationParams } from '../../App';
 import { useAuth } from '../../context/AuthContext';
-//handle login screen for different user roles
-//handle navigation to respective dashboards upon login
+
+// handle login screen for different user roles
+// handle navigation to respective dashboards upon login
 interface Props {
   navigation: {
     navigate: (screen: Screen, params?: NavigationParams) => void;
@@ -20,11 +21,13 @@ interface Props {
 
 export default function LoginScreen({ navigation, route }: Props) {
   const { role } = route.params;
-  const { login } = useAuth();
+  const { login } = useAuth(); // use login from AuthContext
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [rememberMe, setRememberMe] = useState(false);
+  const [error, setError] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
 
   const getRoleConfig = () => {
     switch (role) {
@@ -69,9 +72,6 @@ export default function LoginScreen({ navigation, route }: Props) {
   const config = getRoleConfig();
   const IconComponent = config.icon;
 
-  const [error, setError] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
-
   const handleLogin = async () => {
     if (!email || !password) {
       setError('Please enter both email and password');
@@ -81,21 +81,21 @@ export default function LoginScreen({ navigation, route }: Props) {
     try {
       setIsLoading(true);
       setError('');
-      await login(email, password);
-      
-      // Navigation will be based on the user's role from the database
+
+      // login returns the user object (from AuthContext/authService)
+      const user = await login(email, password);
+
       const dashboardScreens = {
-        'clinician': 'ClinicianDashboard',
-        'agency_admin': 'AgencyAdminDashboard',
-        'scheduler': 'SchedulerDashboard',
-        'super_admin': 'SuperAdminDashboard'
+        clinician: 'ClinicianDashboard',
+        agency_admin: 'AgencyAdminDashboard',
+        scheduler: 'SchedulerDashboard',
+        super_admin: 'SuperAdminDashboard',
       } as const;
-      
-      const userRole = useAuth().user?.role;
-      const dashboardScreen = userRole ? dashboardScreens[userRole as keyof typeof dashboardScreens] : null;
-      
+
+      const dashboardScreen = dashboardScreens[user.role as keyof typeof dashboardScreens];
+
       if (dashboardScreen) {
-        navigation.navigate(dashboardScreen);
+        navigation.navigate(dashboardScreen as Screen);
       } else {
         setError('Invalid user role');
       }
@@ -195,14 +195,22 @@ export default function LoginScreen({ navigation, route }: Props) {
             </button>
           </div>
 
+          {error && (
+            <p className="text-sm text-red-600">
+              {error}
+            </p>
+          )}
+
           <Button
             onClick={handleLogin}
+            disabled={isLoading}
             className="w-full h-12 rounded-xl text-white"
             style={{
               background: `linear-gradient(135deg, ${config.colors.from}, ${config.colors.to})`,
+              opacity: isLoading ? 0.8 : 1,
             }}
           >
-            Sign In
+            {isLoading ? 'Signing In...' : 'Sign In'}
           </Button>
         </div>
 

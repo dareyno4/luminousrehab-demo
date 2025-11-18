@@ -1,8 +1,7 @@
-import React, { useContext } from 'react';
-import { CheckCircle2, User, Pill, FileText, ArrowRight, Home } from 'lucide-react';
+import React from 'react';
+import { CheckCircle2, User, Pill, ArrowRight, Home } from 'lucide-react';
 import { Button } from '../../components/ui/button';
 import { Screen, NavigationParams } from '../../App';
-import { AuthContext } from '../../context/AuthContext';
 
 interface Props {
   navigation: {
@@ -14,12 +13,8 @@ interface Props {
   };
 }
 
-// Updated to display patient details passed from the review screen
 export default function NewPatientChartComplete({ navigation, route }: Props) {
-  const { user } = useContext(AuthContext) || {};
-
-  // Added fallback check for `patient` to handle undefined cases
-  
+  // Patient passed from previous screen; use safe fallback
   const patient = route.params?.patient || {
     first_name: 'Unknown',
     last_name: 'Patient',
@@ -30,8 +25,9 @@ export default function NewPatientChartComplete({ navigation, route }: Props) {
     city: 'N/A',
     state: 'N/A',
     zip_code: 'N/A',
-    notes: 'N/A'
+    notes: 'N/A',
   };
+
   const chartId = route.params?.chartId;
   const patientId = route.params?.patientId;
 
@@ -39,35 +35,41 @@ export default function NewPatientChartComplete({ navigation, route }: Props) {
     navigation.navigate('ClinicianDashboard');
   };
 
-  // Added logic to insert chart into the database
-    const handleStartMedicationCapture = () => {
+  // After chart creation, allow clinician to start capturing medications
+  const handleStartMedicationCapture = () => {
     if (!patientId || !chartId) {
+      // You can swap this to a toast if you prefer
       alert('Missing patient or chart information.');
       return;
     }
 
-    navigation.navigate('CaptureSourceSelection', { 
+    navigation.navigate('CaptureSourceSelection', {
       patientId,
-      chartId
+      chartId,
     });
   };
-
 
   const handleViewPatientList = () => {
     navigation.navigate('PatientChartList');
   };
 
   const calculateAge = (dateString: string) => {
-    if (!dateString) return null;
+    if (!dateString || dateString === 'N/A') return null;
     const today = new Date();
     const birthDate = new Date(dateString);
+    if (isNaN(birthDate.getTime())) return null;
+
     let age = today.getFullYear() - birthDate.getFullYear();
     const monthDiff = today.getMonth() - birthDate.getMonth();
+
     if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birthDate.getDate())) {
       age--;
     }
+
     return age;
   };
+
+  const age = calculateAge(patient.dob);
 
   return (
     <div className="h-screen flex flex-col bg-[#f8fafc]">
@@ -83,22 +85,21 @@ export default function NewPatientChartComplete({ navigation, route }: Props) {
       {/* Content */}
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-2xl mx-auto p-6 space-y-6">
-          
           {/* Success Animation Area */}
           <div className="pt-8 pb-6 flex flex-col items-center">
             <div className="relative">
-              {/* Animated rings */}
-              <div className="absolute inset-0 rounded-full bg-green-100 animate-ping opacity-75"></div>
+              <div className="absolute inset-0 rounded-full bg-green-100 animate-ping opacity-75" />
               <div className="relative w-24 h-24 rounded-full bg-gradient-to-br from-green-500 to-green-600 flex items-center justify-center shadow-xl">
                 <CheckCircle2 className="w-14 h-14 text-white" strokeWidth={2.5} />
               </div>
             </div>
-            
+
             <h2 className="text-3xl text-slate-900 font-semibold mt-8 mb-3 text-center">
               Patient Chart Created!
             </h2>
             <p className="text-slate-600 text-center max-w-md">
-              Successfully created patient chart. You can now add medications through scanning or continue to the dashboard.
+              Successfully created patient chart. You can now add medications through scanning
+              or continue to the dashboard.
             </p>
           </div>
 
@@ -115,13 +116,22 @@ export default function NewPatientChartComplete({ navigation, route }: Props) {
                   <User className="w-5 h-5 text-sky-600" />
                 </div>
                 <div className="flex-1">
-                  <p className="text-xs text-slate-500 uppercase tracking-wide mb-1">Patient Created</p>
-                  <p className="text-slate-900 font-medium">{patient.first_name} {patient.last_name}</p>
-                  <p className="text-sm text-slate-600 mt-0.5">Age: {calculateAge(patient.dob)} DOB: {patient.dob}</p>
+                  <p className="text-xs text-slate-500 uppercase tracking-wide mb-1">
+                    Patient Created
+                  </p>
+                  <p className="text-slate-900 font-medium">
+                    {patient.first_name} {patient.last_name}
+                  </p>
+                  <p className="text-sm text-slate-600 mt-0.5">
+                    {age !== null ? `Age: ${age} • ` : null}
+                    DOB: {patient.dob}
+                  </p>
                 </div>
                 <div className="flex items-center gap-1 px-3 py-1 bg-green-100 rounded-full">
                   <CheckCircle2 className="w-3 h-3 text-green-700" />
-                  <span className="text-xs font-medium text-green-700">#CHT-{Date.now().toString().slice(-6)}</span>
+                  <span className="text-xs font-medium text-green-700">
+                    #CHT-{Date.now().toString().slice(-6)}
+                  </span>
                 </div>
               </div>
             </div>

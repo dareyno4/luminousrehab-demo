@@ -139,7 +139,7 @@ export default function ChartDetail({ navigation, route }: Props) {
   const [loadingDocs, setLoadingDocs] = useState(false);
   const [docsError, setDocsError] = useState<string | null>(null);
 
-  const { patientId, chartId } = route.params;
+  const { patientId, chartId, prefillMedications } = route.params;
   const { user } = useAuth();
 
 const [patient, setPatient] = useState<Patient>({
@@ -283,7 +283,23 @@ const fileInputRef = useRef<HTMLInputElement | null>(null);
     };
 
     loadChartData();
-  }, [chartId, patientId]);
+  }, [chartId, patientId, prefillMedications]);
+
+  useEffect(() => {
+    const addPrefills = async () => {
+      if (!prefillMedications || !Array.isArray(prefillMedications)) return;
+      for (const med of prefillMedications) {
+        try {
+          await saveScannedMedication(med as any);
+        } catch (e) {
+          console.error('Failed to save prefilled medication', e);
+        }
+      }
+    };
+    void addPrefills();
+    // run once on mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Open the Add Medication modal and reset form fields
   const openAddMedicationModal = () => {
@@ -1413,6 +1429,7 @@ const handleFileSelected = async (file: File) => {
               }
             }}
             onCancel={() => setShowOCRScanner(false)}
+            modal={true}
           />
         )}
 

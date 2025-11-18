@@ -4,7 +4,6 @@ import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
 import { Button } from '../../components/ui/button';
 import { Screen, NavigationParams } from '../../App';
-import { useAuth } from '../../context/AuthContext';
 
 interface Props {
   navigation: {
@@ -18,16 +17,16 @@ interface Props {
 
 export default function MFAScreen({ navigation, route }: Props) {
   const { role } = route.params;
-  const { login } = useAuth();
   const [code, setCode] = useState('');
 
   const handleVerify = () => {
-    if(!role) {
-      alert("User role is missing");
+    if (!role) {
+      alert('User role is missing');
       return;
     }
-    login(role);
 
+    // TODO: Verify the MFA code with backend using `code`
+    // For now, just navigate based on role
     switch (role) {
       case 'clinician':
         navigation.navigate('ClinicianDashboard');
@@ -40,6 +39,10 @@ export default function MFAScreen({ navigation, route }: Props) {
         break;
       case 'super-admin':
         navigation.navigate('SuperAdminDashboard');
+        break;
+      default:
+        // optional: show an error if role is unknown
+        alert('Unknown user role');
         break;
     }
   };
@@ -59,7 +62,9 @@ export default function MFAScreen({ navigation, route }: Props) {
             <Shield className="w-10 h-10 text-white" />
           </div>
           <h1 className="text-2xl text-[#0f172a] mb-2">Two-Factor Authentication</h1>
-          <p className="text-[#64748b] px-4">Enter the 6-digit code from your authenticator app</p>
+          <p className="text-[#64748b] px-4">
+            Enter the 6-digit code from your authenticator app
+          </p>
         </div>
 
         <div className="space-y-4">
@@ -85,7 +90,7 @@ export default function MFAScreen({ navigation, route }: Props) {
 
           <div className="text-center">
             <p className="text-sm text-[#64748b]">
-              Didn't receive a code?{' '}
+              Didn&apos;t receive a code?{' '}
               <button className="text-[#0966CC] hover:underline">Resend</button>
             </p>
           </div>

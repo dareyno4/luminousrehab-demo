@@ -71,6 +71,10 @@ import { fetchPatientsForClinician } from '../../services/patientService';
 import { toast } from 'sonner';
 import { Toaster } from '../../components/ui/sonner';
 import { motion, AnimatePresence } from 'motion/react';
+import PatientSelectionModal from '../../components/PatientSelectionModal';
+import MedicationBarcodeScanner, { ScannedMedication } from '../../components/MedicationBarcodeScanner';
+import MedicationOCRScanner from '../../components/MedicationOCRScanner';
+import type { MedicationInfo } from '../../utils/ocrService';
 
 // Time formatting utility for healthcare-friendly display
 const formatLastEditedTime = (date: Date): string => {
@@ -144,6 +148,7 @@ interface Chart {
   status: 'Active' | 'Verified Ready' | 'Delivered (Locked)' | 'Needs Reverification' | 'Archived';
   type: 'Bottle Scan' | 'PDF Import' | 'Manual Entry';
   medicationCount: number;
+  verifiedMedicationCount?: number;
   createdDate: string;
   createdBy: string;
   finalizedDate?: string;
@@ -213,6 +218,7 @@ const mappedData: Patient[] = (data || []).map((patient: any) => ({
     status: mapChartStatus(chart.status),
     type: mapChartSourceToType(chart.source),
     medicationCount: Array.isArray(chart.medications) ? chart.medications.length : 0,
+    verifiedMedicationCount: chart.medications.filter((m: any) => m.verified).length,
     createdDate: chart.created_at,
     createdBy: chart.created_by,
     finalizedDate: chart.finalized_at ?? undefined,
@@ -230,6 +236,15 @@ setPatients(mappedData);
     }
     loadPatients();
   }, [user?.id]);
+  //barcode/ocr stuff
+  const [showBarcodeScanner, setShowBarcodeScanner] = useState(false);
+  const [showOCRScanner, setShowOCRScanner] = useState(false);
+  const [scanTypeForSelection, setScanTypeForSelection] = useState<string>('');
+  const [scannedForSelection, setScannedForSelection] = useState<Partial<MedicationInfo>[]>([]);
+  const [showPatientSelection, setShowPatientSelection] = useState(false);
+  const [showScanOptions, setShowScanOptions] = useState(false);
+  const [isScanSheetOpen, setIsScanSheetOpen] = useState(false);
+
 
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<TabType>('dashboard');
@@ -245,7 +260,6 @@ setPatients(mappedData);
   const [lastSyncTime, setLastSyncTime] = useState(new Date());
   const [syncStatus, setSyncStatus] = useState<'synced' | 'syncing' | 'offline'>('synced');
   const [showReviewBanner, setShowReviewBanner] = useState(false);
-  const [showScanOptions, setShowScanOptions] = useState(false);
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
   const [editedEmail, setEditedEmail] = useState('anna.clinician@luminous.com');
   const [editedPhone, setEditedPhone] = useState('(555) 123-4567');
@@ -299,7 +313,7 @@ setPatients(mappedData);
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
   
   // Scan sheet
-  const [isScanSheetOpen, setIsScanSheetOpen] = useState(false);
+  // Scan sheet (state declared earlier near barcode/ocr setup)
 
   // Calculate stats (must be before useEffects that use these values)
   const totalPatients = patients.length;
@@ -347,6 +361,7 @@ setPatients(mappedData);
     setIsDrawerOpen(false);
   };
 
+  // Accept both patientId and chartId (used in list and dashboard quick actions)
   const handleSelectChart = (patientId: string, chartId: string) => {
     navigation.navigate('ChartDetail', { patientId, chartId });
   };
@@ -379,77 +394,19 @@ setPatients(mappedData);
   };
 
   const handleScanOption = (scanType: string) => {
-    setShowScanOptions(false);
-    setIsScanSheetOpen(false);
-    
-    // Simulate OCR/Barcode scanning that captures patient info
-    // In a real implementation, this would trigger camera/file picker
-    setTimeout(() => {
-      // Mock scanned patient data
-      const scannedData = {
-        name: 'Sarah Martinez',
-        dob: '1955-07-12',
-        uniqueId: 'MRN-789456', // Medical Record Number or other unique identifier
-        medications: [
-          { name: 'Metformin', dosage: '500mg', frequency: 'Twice daily', route: 'Oral' }
-        ]
-      };
+  setShowScanOptions(false);
+  setIsScanSheetOpen(false);
+  setScanTypeForSelection(scanType);
 
-      // Check if patient exists in system
-      const existingPatient = patients.find(p => 
-        p.name.toLowerCase() === scannedData.name.toLowerCase() && 
-        p.dob === scannedData.dob
-      );
+  if (scanType === 'Barcode Scan') {
+    setShowBarcodeScanner(true);
+  } else if (scanType === 'Bottle OCR') {
+    setShowOCRScanner(true);
+  } else if (scanType === 'Import PDF') {
+    toast.info('PDF/Image import coming soon');
+  }
+};
 
-      if (existingPatient) {
-        // Patient exists - show confirmation and update chart
-        toast.success(
-          `Patient "${scannedData.name}" found in system. Updating chart with new medications.`,
-          {
-            duration: 4000,
-            action: {
-              label: 'View Chart',
-              onClick: () => {
-                // Navigate to chart detail to add new medications
-                navigation.navigate('ChartDetail', { 
-                  patientId: existingPatient.id, 
-                  chartId: existingPatient.charts[0]?.id,
-                  scannedMedications: scannedData.medications 
-                });
-              }
-            }
-          }
-        );
-      } else {
-        // Patient doesn't exist - create new chart with pre-filled data
-        toast.info(
-          `New patient "${scannedData.name}" detected. Creating chart...`,
-          {
-            duration: 3000,
-          }
-        );
-        
-        // Navigate to new patient chart with pre-filled data
-        setTimeout(() => {
-          navigation.navigate('NewPatientChart', {
-            prefillData: {
-              firstName: scannedData.name.split(' ')[0],
-              lastName: scannedData.name.split(' ').slice(1).join(' '),
-              dateOfBirth: scannedData.dob,
-              medicalRecordNumber: scannedData.uniqueId,
-            },
-            scannedMedications: scannedData.medications,
-            scanType: scanType
-          });
-        }, 500);
-      }
-    }, 1500); // Simulate scanning delay
-    
-    // Show scanning feedback
-    toast.loading(`${scanType} in progress...`, {
-      duration: 1500,
-    });
-  };
 
   // Toggle quick filter chip
   const toggleQuickFilterChip = (status: FilterStatus) => {
@@ -918,6 +875,70 @@ setPatients(mappedData);
         </SheetContent>
       </Sheet>
 
+        {/* Global Barcode Scanner */}
+      {showBarcodeScanner && (
+        <MedicationBarcodeScanner
+          onMedicationsScanned={(meds: ScannedMedication[]) => {
+            const converted: Partial<MedicationInfo>[] = meds.map(m => ({
+              name: m.name,
+              dosage: m.dosage,
+              frequency: m.frequency,
+              route: m.route,
+            }));
+            setShowBarcodeScanner(false);
+            setScannedForSelection(converted);
+            setShowPatientSelection(true);
+          }}
+          onCancel={() => setShowBarcodeScanner(false)}
+        />
+      )}
+
+      {/* Global OCR Scanner */}
+      {showOCRScanner && (
+        <MedicationOCRScanner
+          onMedicationsScanned={(meds: Partial<MedicationInfo>[]) => {
+            setShowOCRScanner(false);
+            setScannedForSelection(meds);
+            setShowPatientSelection(true);
+          }}
+          onCancel={() => setShowOCRScanner(false)}
+          modal={true}
+        />
+      )}
+
+      {/* Patient Selection after scan */}
+      {showPatientSelection && (
+        <PatientSelectionModal
+          scannedMedications={scannedForSelection}
+          scanType={scanTypeForSelection}
+          patients={patients.map(p => ({
+            id: p.id,
+            firstName: p.name.split(' ')[0] || p.name,
+            lastName: p.name.split(' ').slice(1).join(' '),
+            dateOfBirth: p.dob,
+          }))}
+          onSelectExistingPatient={(patientId) => {
+            const p = patients.find(px => px.id === patientId);
+            setShowPatientSelection(false);
+            if (p) {
+              navigation.navigate('ChartDetail', {
+                patientId: p.id,
+                chartId: p.charts[0]?.id,
+                prefillMedications: scannedForSelection,
+              });
+            }
+          }}
+          onCreateNewPatient={() => {
+            setShowPatientSelection(false);
+            navigation.navigate('NewPatientChart', {
+              scannedMedications: scannedForSelection,
+              scanType: scanTypeForSelection,
+            });
+          }}
+          onCancel={() => setShowPatientSelection(false)}
+        />
+      )}
+
       {/* Sync Status - Streamlined */}
       <div className="flex items-center justify-end" aria-live="polite" role="status">
         <div className="flex items-center gap-2">
@@ -1156,7 +1177,7 @@ setPatients(mappedData);
             // Calculate progress: until we have per-med verification states on dashboard, treat all meds as unverified.
             // Optionally we could fetch medications for this chart here for real-time progress.
             const totalMeds = mostRecentActive.chart.medicationCount;
-            const verifiedMeds = 0; // placeholder; real value requires additional query for verified flags
+            const verifiedMeds = mostRecentActive.chart.verifiedMedicationCount || 0;
             const progressPercent = totalMeds > 0 ? Math.min((verifiedMeds / totalMeds) * 100, 100) : 0;
             
             // Calculate time since last edit using proper formatting

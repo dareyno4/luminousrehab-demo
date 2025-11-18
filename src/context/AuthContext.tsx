@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, ReactNode } from 'react';
 import { authService } from '../services/auth';
-//define User from table
+
+// User as defined in your working code
 interface User {
   id: string;
   tenant_id: string;
@@ -11,12 +12,15 @@ interface User {
   active: boolean;
   mfa_enabled: boolean;
   token?: string;
-  agency_name?: string; // Added
+  agency_name?: string;
 }
 
-//define authentication context type
+// Auth context type – merged:
+// - keeps your fields (user, isAuthenticated, error, login/logout)
+// - adds `role` so other code can do `const { role } = useAuth()`
 interface AuthContextType {
   user: User | null;
+  role: string | null;
   isAuthenticated: boolean;
   login: (email: string, password: string) => Promise<User>;
   logout: () => Promise<void>;
@@ -29,7 +33,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [error, setError] = useState<string | null>(null);
-//login function calling auth service
+
+  // login function using authService (your working behavior)
   const login = async (email: string, password: string) => {
     try {
       setError(null);
@@ -56,7 +61,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, isAuthenticated, login, logout, error }}>
+    <AuthContext.Provider
+      value={{
+        user,
+        role: user?.role ?? null, // <- added for compatibility with his code
+        isAuthenticated,
+        login,
+        logout,
+        error,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );
