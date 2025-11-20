@@ -348,20 +348,10 @@ export default function ChartDelivery({ navigation, route }: Props) {
     }
 
     try {
-      // Provide delivery metadata to satisfy DB check constraints
-  let deliveredVia: 'pdf' | 'fax' | 'email' | 'print' | null = null;
-  if (selectedMethods.pdf) deliveredVia = 'pdf';
-  else if (selectedMethods.email) deliveredVia = 'email';
-  else if (selectedMethods.fax) deliveredVia = 'fax';
-  else if (selectedMethods.print) deliveredVia = 'print';
-
       const payload: any = {
-        status: 'delivered_locked',
+        status: 'pending_review',
         finalized_at: new Date().toISOString(),
         finalized_by: user.id,
-        delivered_by: user.id,
-        delivered_via: deliveredVia,
-        first_delivered_at: new Date().toISOString(),
       };
 
       const { error } = await supabaseClient
@@ -370,14 +360,12 @@ export default function ChartDelivery({ navigation, route }: Props) {
         .eq('id', chartId);
 
       if (error) {
-        console.error('Error finalizing chart:', error);
-        alert(`Failed to finalize chart: ${error.message || 'Unknown error'}`);
+        console.error('Error submitting chart for review:', error);
+        alert(`Failed to submit chart: ${error.message || 'Unknown error'}`);
         return;
       }
 
-      // Optional: add an audit log entry later if you want audit trail
-
-      alert('Chart has been sent for agency admin approval');
+      alert('Chart has been submitted for agency admin review');
       navigation.navigate('ClinicianDashboard');
     } catch (err: any) {
       console.error('Unexpected error finalizing chart:', err);

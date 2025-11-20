@@ -1,9 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { 
-  Building2, Plus, LogOut, Menu, User, Settings, Lock, AlertTriangle, Users, FileText, Activity, 
-  Shield, Zap, MoreVertical, Search, Filter, Info, ExternalLink, CheckCircle2, Clock, Download, 
-  Eye, Trash2, Mail, Key, Monitor, X, ChevronRight, BarChart3, Flag, Database, Copy, Moon, Sun,
-  UserCog, History, Ban, PlayCircle, Smartphone
+  Building2, Plus, LogOut, Menu, User, Settings, AlertTriangle, Users, FileText, Activity, 
+  Shield, Zap, MoreVertical, Search, Filter, CheckCircle2, Clock, Download, 
+  Eye, Mail, X, ChevronRight, BarChart3, Database, Upload, CheckCircle, XCircle,
+  Ban, PlayCircle, History, Key, RefreshCw, TrendingUp, AlertCircle
 } from 'lucide-react';
 import { Badge } from '../../components/ui/badge';
 import { Button } from '../../components/ui/button';
@@ -31,12 +31,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from '../../components/ui/select';
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from '../../components/ui/tooltip';
 import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
 import { Checkbox } from '../../components/ui/checkbox';
@@ -44,10 +38,27 @@ import { Avatar, AvatarFallback } from '../../components/ui/avatar';
 import { Textarea } from '../../components/ui/textarea';
 import { Switch } from '../../components/ui/switch';
 import { Separator } from '../../components/ui/separator';
+import { Card } from '../../components/ui/card';
 import { toast } from 'sonner';
+import { Toaster } from '../../components/ui/sonner';
 import { Screen, NavigationParams } from '../../App';
 import { useAuth } from '../../context/AuthContext';
-import { CommandPalette } from '../../components/CommandPalette';
+import {
+  fetchAllTenants,
+  createTenant,
+  updateTenant,
+  suspendTenant,
+  unsuspendTenant,
+  deleteTenant,
+  updateFeatureFlags,
+  uploadBAADocument,
+  fetchBAADocuments,
+  fetchAuditLogs,
+  getSuperAdminStats,
+  impersonateTenant,
+  type BAADocument,
+  type AuditLog,
+} from '../../services/superAdminService';
 
 interface Props {
   navigation: {
@@ -56,1970 +67,1204 @@ interface Props {
   };
 }
 
-interface Agency {
+type TabType = 'tenants' | 'audit' | 'profile';
+
+interface TenantData {
   id: string;
   name: string;
-  status: 'Active' | 'Inactive' | 'Suspended' | 'At-Risk';
-  environment: 'Production' | 'Test' | 'Trial' | 'Onboarding';
   subdomain: string;
-  contact: string;
-  ein: string;
-  created: string;
-  baaStatus: 'BAA Signed' | 'BAA Not Signed' | 'BAA Expiring Soon';
-  baaSignedDate?: string;
-  baaSignedBy?: string;
-  baaRenewedDate?: string;
-  billingPlan: 'Enterprise' | 'Professional' | 'Starter' | 'Trial';
-  seats: number;
-  seatsUsed: number;
-  renewal?: string;
-  lastActive?: string;
-  systemHealth: 'Healthy' | 'Warning' | 'Critical';
-  lastImport?: string;
-  lastImportSuccess?: boolean;
-  clinicianCount: number;
-  unverifiedUsers: number;
-  mfaPercentage: number;
-  onboardingComplete: number;
-  logo?: string;
-  region?: string;
-  featureFlags?: string[];
+  contact_email: string;
+  contact_phone?: string;
+  status: string;
+  environment?: string;
+  test_mode: boolean;
+  baa_status?: string;
+  baa_signed: boolean;
+  baa_signer_name?: string;
+  baa_renewal_date?: string;
+  user_count?: number;
+  patient_count?: number;
+  chart_count?: number;
+  feature_flags?: string[];
+  created_at: string;
 }
-
-interface AuditLogEntry {
-  id: string;
-  timestamp: string;
-  actor: string;
-  action: string;
-  entity: string;
-  details: string;
-}
-
-interface ActiveSession {
-  id: string;
-  device: string;
-  location: string;
-  lastActive: string;
-  current: boolean;
-}
-
-type TabType = 'agencies' | 'profile' | 'settings';
-type TimeframeType = '7d' | '30d' | 'YTD';
 
 export default function SuperAdminDashboard({ navigation }: Props) {
-  const { logout } = useAuth();
+  const { logout, user } = useAuth();
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<TabType>('agencies');
-  const [isAddAgencyModalOpen, setIsAddAgencyModalOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState<TabType>('tenants');
   const [searchQuery, setSearchQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState<string>('all');
-  const [environmentFilter, setEnvironmentFilter] = useState<string>('all');
-  const [timeframe, setTimeframe] = useState<TimeframeType>('7d');
-  const [selectedBaaAgency, setSelectedBaaAgency] = useState<Agency | null>(null);
-  const [isAuditLogOpen, setIsAuditLogOpen] = useState(false);
-  const [isImpersonateOpen, setIsImpersonateOpen] = useState(false);
-  const [impersonateAgency, setImpersonateAgency] = useState<Agency | null>(null);
-  const [impersonateReason, setImpersonateReason] = useState('');
-  const [isFeatureFlagsOpen, setIsFeatureFlagsOpen] = useState(false);
-  const [featureFlagsAgency, setFeatureFlagsAgency] = useState<Agency | null>(null);
-  const [isSuspendDialogOpen, setIsSuspendDialogOpen] = useState(false);
-  const [suspendAgency, setSuspendAgency] = useState<Agency | null>(null);
-  const [suspendReason, setSuspendReason] = useState('');
-  const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
-  const [activeFilters, setActiveFilters] = useState<string[]>([]);
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [environmentFilter, setEnvironmentFilter] = useState('all');
   
-  // Settings
-  const [darkMode, setDarkMode] = useState(false);
-  const [defaultSort, setDefaultSort] = useState('created');
-  const [defaultAnalyticsWindow, setDefaultAnalyticsWindow] = useState('7d');
-  const [emailDigestFrequency, setEmailDigestFrequency] = useState('daily');
-
-  // Sessions
-  const [activeSessions] = useState<ActiveSession[]>([
-    { id: '1', device: 'Chrome on MacOS', location: 'San Francisco, CA', lastActive: 'Active now', current: true },
-    { id: '2', device: 'Safari on iPhone', location: 'San Francisco, CA', lastActive: '2 hours ago', current: false },
-  ]);
-
-  const [formData, setFormData] = useState({
-    agencyName: '',
-    subdomain: '',
-    domainSuffix: '.app',
-    ein: '',
-    contactEmail: '',
-    contactPhone: '',
-    paymentToken: '',
-    baaSigned: false,
-    testMode: false,
+  // Real data state
+  const [tenants, setTenants] = useState<TenantData[]>([]);
+  const [selectedTenant, setSelectedTenant] = useState<TenantData | null>(null);
+  const [baaDocuments, setBAADocuments] = useState<BAADocument[]>([]);
+  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [stats, setStats] = useState({
+    totalTenants: 0,
+    activeTenants: 0,
+    suspendedTenants: 0,
+    baaPending: 0,
+    baaExpiring: 0,
+    totalUsers: 0,
+    totalPatients: 0,
+    totalCharts: 0,
   });
 
-  const [agencies] = useState<Agency[]>([
-    {
-      id: '1',
-      name: 'Luminous QA – Test HHA',
-      status: 'Active',
-      environment: 'Test',
-      subdomain: 'qa.app',
-      contact: 'admin@qa-hha.test',
-      ein: '12-3456789',
-      created: '12/31/2024',
-      baaStatus: 'BAA Signed',
-      baaSignedDate: 'Jan 15, 2025',
-      baaSignedBy: 'Admin User',
-      billingPlan: 'Professional',
-      seats: 25,
-      seatsUsed: 18,
-      renewal: 'Dec 2025',
-      lastActive: '2 hours ago',
-      systemHealth: 'Healthy',
-      lastImport: '32 docs today',
-      lastImportSuccess: true,
-      clinicianCount: 8,
-      unverifiedUsers: 1,
-      mfaPercentage: 87,
-      onboardingComplete: 100,
-      region: 'US-West',
-      featureFlags: ['New OCR', 'Background sync v2'],
-    },
-    {
-      id: '2',
-      name: 'Sample Home Health Agency',
-      status: 'Active',
-      environment: 'Production',
-      subdomain: 'sample.app',
-      contact: 'admin@samplehha.com',
-      ein: '98-7654321',
-      created: '1/31/2025',
-      baaStatus: 'BAA Signed',
-      baaSignedDate: 'Feb 1, 2025',
-      baaSignedBy: 'Agency Admin',
-      billingPlan: 'Enterprise',
-      seats: 50,
-      seatsUsed: 48,
-      renewal: 'Jan 2026',
-      lastActive: '15 mins ago',
-      systemHealth: 'Healthy',
-      lastImport: '128 docs today',
-      lastImportSuccess: true,
-      clinicianCount: 24,
-      unverifiedUsers: 0,
-      mfaPercentage: 100,
-      onboardingComplete: 100,
-      region: 'US-East',
-      featureFlags: ['New OCR', 'Background sync v2', 'RN mobile beta'],
-    },
-    {
-      id: '3',
-      name: 'New Agency Without BAA',
-      status: 'At-Risk',
-      environment: 'Onboarding',
-      subdomain: 'newagency.app',
-      contact: 'contact@newagency.com',
-      ein: '',
-      created: '10/7/2025',
-      baaStatus: 'BAA Not Signed',
-      billingPlan: 'Trial',
-      seats: 10,
-      seatsUsed: 7,
-      renewal: 'Nov 15, 2025',
-      lastActive: '3 days ago',
-      systemHealth: 'Warning',
-      lastImport: 'No activity',
-      lastImportSuccess: false,
-      clinicianCount: 2,
-      unverifiedUsers: 5,
-      mfaPercentage: 40,
-      onboardingComplete: 45,
-      region: 'US-West',
-      featureFlags: [],
-    },
-    {
-      id: '4',
-      name: 'Sunrise Healthcare',
-      status: 'Active',
-      environment: 'Production',
-      subdomain: 'sunrise.app',
-      contact: 'admin@sunrisehc.com',
-      ein: '45-6789012',
-      created: '3/12/2025',
-      baaStatus: 'BAA Expiring Soon',
-      baaSignedDate: 'Mar 15, 2025',
-      baaSignedBy: 'System Admin',
-      billingPlan: 'Enterprise',
-      seats: 75,
-      seatsUsed: 62,
-      renewal: 'Mar 2026',
-      lastActive: '1 hour ago',
-      systemHealth: 'Healthy',
-      lastImport: '89 docs today',
-      lastImportSuccess: true,
-      clinicianCount: 34,
-      unverifiedUsers: 2,
-      mfaPercentage: 94,
-      onboardingComplete: 100,
-      region: 'US-Central',
-      featureFlags: ['New OCR'],
-    },
-  ]);
+  // Modals
+  const [isAddTenantOpen, setIsAddTenantOpen] = useState(false);
+  const [isBAADialogOpen, setIsBAADialogOpen] = useState(false);
+  const [isSuspendDialogOpen, setIsSuspendDialogOpen] = useState(false);
+  const [isFeatureFlagsOpen, setIsFeatureFlagsOpen] = useState(false);
+  const [isImpersonateOpen, setIsImpersonateOpen] = useState(false);
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
+  const [isActivationDialogOpen, setIsActivationDialogOpen] = useState(false);
+  const [activationInfo, setActivationInfo] = useState<{
+    tenantName: string;
+    subdomain: string;
+    contactEmail: string;
+    activationCode: string;
+    activationLink: string;
+  } | null>(null);
 
-  const [auditLogs] = useState<AuditLogEntry[]>([
-    { id: '1', timestamp: '2025-11-06 14:32', actor: 'super-admin@luminous.com', action: 'Agency Created', entity: 'Sample Home Health Agency', details: 'Created new production agency' },
-    { id: '2', timestamp: '2025-11-06 13:15', actor: 'super-admin@luminous.com', action: 'User Added', entity: 'Luminous QA', details: 'Added clinician John Doe' },
-    { id: '3', timestamp: '2025-11-06 12:00', actor: 'super-admin@luminous.com', action: 'Settings Changed', entity: 'Sunrise Healthcare', details: 'Updated BAA document' },
-    { id: '4', timestamp: '2025-11-06 10:45', actor: 'super-admin@luminous.com', action: 'Impersonation Started', entity: 'Sample Home Health Agency', details: 'Reason: Support request #1234' },
-    { id: '5', timestamp: '2025-11-06 10:30', actor: 'super-admin@luminous.com', action: 'Agency Suspended', entity: 'Old Agency', details: 'Reason: Payment failure' },
-  ]);
+  // Form data
+  const [formData, setFormData] = useState({
+    name: '',
+    subdomain: '',
+    ein: '',
+    contact_email: '',
+    contact_phone: '',
+    environment: 'test' as 'production' | 'test',
+  });
 
-  // Keyboard shortcut for command palette
+  const [baaFile, setBAAFile] = useState<File | null>(null);
+  const [baaSignedBy, setBAASignedBy] = useState('');
+  const [baaExpiresAt, setBAAExpiresAt] = useState('');
+  const [suspendReason, setSuspendReason] = useState('');
+  const [impersonateReason, setImpersonateReason] = useState('');
+  const [testMode, setTestMode] = useState(false);
+  const [deleteConfirmText, setDeleteConfirmText] = useState('');
+
+  // Load data on mount
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
-        e.preventDefault();
-        setIsCommandPaletteOpen(true);
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    loadData();
   }, []);
 
-  // Enhanced Metrics based on timeframe
-  const totalAgencies = agencies.length;
-  const activeAgencies = agencies.filter((a) => a.status === 'Active').length;
-  const baaPending = agencies.filter((a) => a.baaStatus === 'BAA Not Signed').length;
-  const baaExpiring = agencies.filter((a) => a.baaStatus === 'BAA Expiring Soon').length;
-  const suspendedOrAtRisk = agencies.filter((a) => a.status === 'Suspended' || a.status === 'At-Risk').length;
-  const totalClinicians = agencies.reduce((sum, a) => sum + a.clinicianCount, 0);
-  const totalUnverifiedUsers = agencies.reduce((sum, a) => sum + a.unverifiedUsers, 0);
-  
-  // Timeframe-specific metrics (mocked - would be from API based on timeframe)
-  const getDocsToday = () => {
-    const multiplier = timeframe === '7d' ? 1 : timeframe === '30d' ? 4 : 48;
-    return agencies.reduce((sum, a) => {
-      const match = a.lastImport?.match(/(\d+) docs/);
-      return sum + (match ? parseInt(match[1]) * multiplier : 0);
-    }, 0);
-  };
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [tenantsData, statsData, auditData] = await Promise.all([
+        fetchAllTenants(),
+        getSuperAdminStats(),
+        fetchAuditLogs({ limit: 100 }).catch(() => []), // Don't fail if audit logs unavailable
+      ]);
 
-  const complianceRisks = baaPending + baaExpiring + suspendedOrAtRisk + (totalUnverifiedUsers > 5 ? 1 : 0);
+      setTenants(tenantsData as TenantData[]);
+      setStats(statsData);
+      setAuditLogs(auditData);
+    } catch (error) {
+      console.error('Error loading super admin data:', error);
+      toast.error('Failed to load some dashboard data. Check console for details.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
-  // Filter agencies
-  const filteredAgencies = agencies.filter((agency) => {
+  // Filter tenants
+  const filteredTenants = tenants.filter((tenant) => {
     const matchesSearch = 
-      agency.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      agency.subdomain.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      agency.contact.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      agency.ein?.toLowerCase().includes(searchQuery.toLowerCase());
+      tenant.name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      tenant.subdomain?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      tenant.contact_email?.toLowerCase().includes(searchQuery.toLowerCase());
     
-    const matchesStatus = statusFilter === 'all' || agency.status === statusFilter;
-    const matchesEnvironment = environmentFilter === 'all' || agency.environment === environmentFilter;
-    const matchesActiveFilters = activeFilters.length === 0 || 
-      activeFilters.every(filter => {
-        if (filter === 'Active' || filter === 'Test' || filter === 'Production' || filter === 'At-Risk' || filter === 'Onboarding') {
-          return agency.status === filter || agency.environment === filter;
-        }
-        return true;
-      });
+    const matchesStatus = statusFilter === 'all' || tenant.status === statusFilter;
+    const matchesEnvironment = environmentFilter === 'all' || tenant.environment === environmentFilter;
     
-    return matchesSearch && matchesStatus && matchesEnvironment && matchesActiveFilters;
+    return matchesSearch && matchesStatus && matchesEnvironment;
   });
 
-  const handleSignOut = () => {
+  // Handlers
+  const handleLogout = () => {
     logout();
     navigation.navigate('Landing');
   };
 
-  const handleTabChange = (tab: TabType) => {
-    setActiveTab(tab);
-    setIsDrawerOpen(false);
-  };
-
-  const handleFormChange = (field: string, value: string | boolean) => {
-    setFormData((prev) => ({ ...prev, [field]: value }));
-  };
-
-  const handleAddAgency = () => {
-    if (!formData.agencyName || !formData.subdomain || !formData.contactEmail) {
+  const handleAddTenant = async () => {
+    if (!formData.name || !formData.subdomain || !formData.contact_email) {
       toast.error('Please fill in all required fields');
       return;
     }
-    toast.success('Agency created successfully!');
-    setIsAddAgencyModalOpen(false);
-    setFormData({
-      agencyName: '',
-      subdomain: '',
-      domainSuffix: '.app',
-      ein: '',
-      contactEmail: '',
-      contactPhone: '',
-      paymentToken: '',
-      baaSigned: false,
-      testMode: false,
-    });
+    
+    try {
+      await createTenant(formData);
+      toast.success('Tenant created successfully');
+      setIsAddTenantOpen(false);
+      setFormData({
+        name: '',
+        subdomain: '',
+        ein: '',
+        contact_email: '',
+        contact_phone: '',
+        environment: 'test',
+      });
+      loadData();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to create tenant');
+    }
   };
 
-  const handleImpersonate = () => {
-    if (!impersonateReason.trim()) {
-      toast.error('Please provide a reason for impersonation');
+  const handleUploadBAA = async () => {
+    if (!baaFile || !baaSignedBy || !baaExpiresAt || !selectedTenant) {
+      toast.error('Please fill in all BAA fields');
       return;
     }
-    toast.success(`Impersonating ${impersonateAgency?.name} for 15 minutes`);
-    // Log to audit
-    console.log('Audit: Impersonation started', { agency: impersonateAgency?.id, reason: impersonateReason });
-    setIsImpersonateOpen(false);
-    setImpersonateReason('');
+
+    try {
+      const result = await uploadBAADocument(selectedTenant.id, baaFile, baaSignedBy, baaExpiresAt);
+      toast.success('BAA document uploaded successfully');
+      setIsBAADialogOpen(false);
+      setBAAFile(null);
+      setBAASignedBy('');
+      setBAAExpiresAt('');
+      
+      // Show activation dialog if activation info is returned
+      if (result.activationInfo) {
+        setActivationInfo(result.activationInfo);
+        setIsActivationDialogOpen(true);
+      }
+      
+      loadData();
+    } catch (error) {
+      console.error('BAA upload error:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Failed to upload BAA document';
+      toast.error(`Failed to upload BAA: ${errorMessage}`);
+    }
   };
 
-  const handleSuspend = () => {
-    if (!suspendReason.trim()) {
+  const handleViewBAA = async (tenant: TenantData) => {
+    try {
+      const docs = await fetchBAADocuments(tenant.id);
+      setBAADocuments(docs);
+      setSelectedTenant(tenant);
+      setBAASignedBy(tenant.baa_signer_name || '');
+      setIsBAADialogOpen(true);
+    } catch (error) {
+      toast.error('Failed to load BAA documents');
+    }
+  };
+
+  const handleSuspend = async () => {
+    if (!suspendReason.trim() || !selectedTenant) {
       toast.error('Please provide a reason for suspension');
       return;
     }
-    toast.success(`${suspendAgency?.name} has been suspended`);
-    setIsSuspendDialogOpen(false);
-    setSuspendReason('');
+    
+    try {
+      await suspendTenant(selectedTenant.id, suspendReason);
+      toast.success(`${selectedTenant.name} has been suspended`);
+      setIsSuspendDialogOpen(false);
+      setSuspendReason('');
+      setSelectedTenant(null);
+      loadData();
+    } catch (error) {
+      toast.error('Failed to suspend tenant');
+    }
+  };
+
+  const handleUnsuspend = async (tenant: TenantData) => {
+    try {
+      await unsuspendTenant(tenant.id);
+      toast.success('Tenant has been reactivated');
+      loadData();
+    } catch (error) {
+      toast.error('Failed to reactivate tenant');
+    }
+  };
+
+  const handleUpdateTestMode = async () => {
+    if (!selectedTenant) return;
+    
+    try {
+      await updateTenant(selectedTenant.id, { test_mode: testMode });
+      toast.success('Test mode updated');
+      setIsFeatureFlagsOpen(false);
+      setSelectedTenant(null);
+      loadData();
+    } catch (error) {
+      toast.error('Failed to update test mode');
+    }
+  };
+
+  const handleImpersonate = async () => {
+    if (!impersonateReason.trim() || !selectedTenant) {
+      toast.error('Please provide a reason for impersonation');
+      return;
+    }
+    
+    try {
+      await impersonateTenant(selectedTenant.id, impersonateReason);
+      toast.success(`Impersonating ${selectedTenant.name} - logged to audit`);
+      setIsImpersonateOpen(false);
+      setImpersonateReason('');
+      setSelectedTenant(null);
+      loadData();
+    } catch (error) {
+      toast.error('Failed to start impersonation');
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!selectedTenant) return;
+    
+    if (deleteConfirmText !== selectedTenant.name) {
+      toast.error(`Please type "${selectedTenant.name}" to confirm deletion`);
+      return;
+    }
+    
+    try {
+      await deleteTenant(selectedTenant.id);
+      toast.success(`${selectedTenant.name} has been permanently deleted`);
+      setIsDeleteDialogOpen(false);
+      setDeleteConfirmText('');
+      setSelectedTenant(null);
+      loadData();
+    } catch (error) {
+      toast.error('Failed to delete tenant');
+    }
   };
 
   const handleExportCSV = () => {
-    toast.success('Exporting agencies to CSV...');
+    const csv = [
+      ['Name', 'Subdomain', 'Status', 'Environment', 'BAA Status', 'Users', 'Patients', 'Charts', 'Created'],
+      ...filteredTenants.map(t => [
+        t.name,
+        t.subdomain,
+        t.status,
+        t.environment,
+        t.baa_status,
+        t.user_count || 0,
+        t.patient_count || 0,
+        t.chart_count || 0,
+        new Date(t.created_at).toLocaleDateString(),
+      ])
+    ].map(row => row.join(',')).join('\n');
+    
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `tenants-${new Date().toISOString().split('T')[0]}.csv`;
+    a.click();
+    toast.success('Exporting to CSV...');
   };
 
-  const toggleFilter = (filter: string) => {
-    setActiveFilters(prev => 
-      prev.includes(filter) ? prev.filter(f => f !== filter) : [...prev, filter]
+  // Helper functions
+  const getStatusBadge = (status: string) => {
+    const configs: Record<string, { color: string; label: string }> = {
+      active: { color: 'bg-green-100 text-green-800 border-green-200', label: 'Active' },
+      inactive: { color: 'bg-gray-100 text-gray-800 border-gray-200', label: 'Inactive' },
+      suspended: { color: 'bg-red-100 text-red-800 border-red-200', label: 'Suspended' },
+      trial: { color: 'bg-yellow-100 text-yellow-800 border-yellow-200', label: 'Trial' },
+    };
+    const config = configs[status] || configs.inactive;
+    return (
+      <Badge className={`${config.color} border`}>{config.label}</Badge>
     );
   };
 
-  const removeFilter = (filter: string) => {
-    setActiveFilters(prev => prev.filter(f => f !== filter));
-  };
-
-  const handleRevokeSession = (sessionId: string) => {
-    toast.success('Session revoked successfully');
-  };
-
-  // Helper function for environment badge
-  const getEnvironmentBadge = (env: Agency['environment'], clickable = false) => {
-    const configs = {
-      Test: { icon: '🧪', color: 'bg-[#DBEAFE] text-[#1E40AF] border-[#93C5FD]', label: 'Test' },
-      Production: { icon: '🏥', color: 'bg-[#D1FAE5] text-[#047857] border-[#A7F3D0]', label: 'Production' },
-      Trial: { icon: '🌱', color: 'bg-[#FEF3C7] text-[#B45309] border-[#FDE68A]', label: 'Trial' },
-      Onboarding: { icon: '🚧', color: 'bg-[#FEE2E2] text-[#B91C1C] border-[#FECACA]', label: 'Onboarding' },
-    };
-    const config = configs[env];
+  const getEnvironmentBadge = (testMode: boolean) => {
+    if (testMode) {
+      return (
+        <Badge className="bg-purple-100 text-purple-800 border-purple-200 border">
+          <span className="mr-1">🧪</span>
+          Test
+        </Badge>
+      );
+    }
     return (
-      <Badge 
-        className={`${config.color} ${clickable ? 'cursor-pointer hover:opacity-80' : ''}`}
-        onClick={clickable ? () => toggleFilter(env) : undefined}
-      >
-        <span className="mr-1">{config.icon}</span>
+      <Badge className="bg-blue-100 text-blue-800 border-blue-200 border">
+        <span className="mr-1">🏥</span>
+        Production
+      </Badge>
+    );
+  };
+
+  const getBAABadge = (status: string) => {
+    const configs: Record<string, { color: string; label: string; icon: any }> = {
+      signed: { color: 'bg-green-100 text-green-800 border-green-200', label: 'BAA Signed', icon: CheckCircle },
+      not_signed: { color: 'bg-red-100 text-red-800 border-red-200', label: 'BAA Missing', icon: XCircle },
+      expiring_soon: { color: 'bg-yellow-100 text-yellow-800 border-yellow-200', label: 'BAA Expiring', icon: Clock },
+    };
+    const config = configs[status] || configs.not_signed;
+    const Icon = config.icon;
+    return (
+      <Badge className={`${config.color} border flex items-center gap-1`}>
+        <Icon className="w-3 h-3" />
         {config.label}
       </Badge>
     );
   };
 
-  // Helper function for status badge
-  const getStatusBadge = (status: Agency['status'], clickable = false) => {
-    const configs = {
-      Active: { color: 'bg-[#D1FAE5] text-[#047857] border-[#A7F3D0]' },
-      Inactive: { color: 'bg-[#E5E7EB] text-[#4B5563] border-[#D1D5DB]' },
-      Suspended: { color: 'bg-[#FEE2E2] text-[#B91C1C] border-[#FECACA]' },
-      'At-Risk': { color: 'bg-[#FED7AA] text-[#C2410C] border-[#FDBA74]' },
-    };
+  if (loading) {
     return (
-      <Badge 
-        className={`${configs[status].color} ${clickable ? 'cursor-pointer hover:opacity-80' : ''}`}
-        onClick={clickable ? () => toggleFilter(status) : undefined}
-      >
-        {status}
-      </Badge>
+      <div className="h-full flex items-center justify-center bg-gradient-to-br from-slate-50 to-white">
+        <div className="text-center">
+          <RefreshCw className="w-8 h-8 text-[#0966CC] animate-spin mx-auto mb-2" />
+          <p className="text-slate-600">Loading dashboard...</p>
+        </div>
+      </div>
     );
-  };
-
-  // Helper function for health status
-  const getHealthStatus = (health: Agency['systemHealth']) => {
-    const configs = {
-      Healthy: { icon: CheckCircle2, color: 'text-[#10B981]', bg: 'bg-[#D1FAE5]' },
-      Warning: { icon: AlertTriangle, color: 'text-[#F59E0B]', bg: 'bg-[#FEF3C7]' },
-      Critical: { icon: AlertTriangle, color: 'text-[#DC2626]', bg: 'bg-[#FEE2E2]' },
-    };
-    const config = configs[health];
-    const Icon = config.icon;
-    return (
-      <TooltipProvider>
-        <Tooltip>
-          <TooltipTrigger>
-            <div className={`w-8 h-8 rounded-lg ${config.bg} flex items-center justify-center`}>
-              <Icon className={`w-4 h-4 ${config.color}`} />
-            </div>
-          </TooltipTrigger>
-          <TooltipContent>
-            <p>System Health: {health}</p>
-          </TooltipContent>
-        </Tooltip>
-      </TooltipProvider>
-    );
-  };
-
-  // Security posture indicator
-  const getSecurityPosture = (agency: Agency) => {
-    let score = 0;
-    if (agency.baaStatus === 'BAA Signed') score += 25;
-    if (agency.mfaPercentage >= 90) score += 25;
-    else if (agency.mfaPercentage >= 70) score += 15;
-    if (agency.unverifiedUsers === 0) score += 25;
-    else if (agency.unverifiedUsers <= 2) score += 15;
-    if (agency.systemHealth === 'Healthy') score += 25;
-    else if (agency.systemHealth === 'Warning') score += 15;
-
-    const color = score >= 80 ? 'text-[#10B981]' : score >= 50 ? 'text-[#F59E0B]' : 'text-[#DC2626]';
-    const bg = score >= 80 ? 'bg-[#D1FAE5]' : score >= 50 ? 'bg-[#FEF3C7]' : 'bg-[#FEE2E2]';
-    const label = score >= 80 ? 'Good' : score >= 50 ? 'Fair' : 'Poor';
-
-    return (
-      <TooltipProvider>
-        <Tooltip>
-          <TooltipTrigger>
-            <div className={`flex items-center gap-1.5 px-2 py-1 rounded-md ${bg}`}>
-              <Shield className={`w-3 h-3 ${color}`} />
-              <span className={`text-xs ${color}`}>{label}</span>
-            </div>
-          </TooltipTrigger>
-          <TooltipContent className="max-w-xs">
-            <p className="mb-2">Security Posture Checklist:</p>
-            <ul className="text-xs space-y-1">
-              <li>✓ BAA: {agency.baaStatus}</li>
-              <li>✓ MFA: {agency.mfaPercentage}% of users</li>
-              <li>✓ Unverified Users: {agency.unverifiedUsers}</li>
-              <li>✓ System Health: {agency.systemHealth}</li>
-            </ul>
-          </TooltipContent>
-        </Tooltip>
-      </TooltipProvider>
-    );
-  };
-
-  // Sidebar Navigation Component (Desktop)
-  const renderSidebarNav = () => (
-    <nav className="space-y-1">
-      <button
-        onClick={() => setActiveTab('agencies')}
-        className={`w-full flex items-center gap-3 px-3 py-3 rounded-lg transition-colors ${
-          activeTab === 'agencies'
-            ? 'bg-[#E0F2FE] text-[#0966CC]'
-            : 'text-[#64748b] hover:bg-[#f8fafc]'
-        }`}
-      >
-        <Building2 className="w-5 h-5" />
-        <span>Agencies</span>
-      </button>
-
-      <button
-        onClick={() => setActiveTab('profile')}
-        className={`w-full flex items-center gap-3 px-3 py-3 rounded-lg transition-colors ${
-          activeTab === 'profile'
-            ? 'bg-[#E0F2FE] text-[#0966CC]'
-            : 'text-[#64748b] hover:bg-[#f8fafc]'
-        }`}
-      >
-        <User className="w-5 h-5" />
-        <span>Account Hub</span>
-      </button>
-
-      <button
-        onClick={() => setActiveTab('settings')}
-        className={`w-full flex items-center gap-3 px-3 py-3 rounded-lg transition-colors ${
-          activeTab === 'settings'
-            ? 'bg-[#E0F2FE] text-[#0966CC]'
-            : 'text-[#64748b] hover:bg-[#f8fafc]'
-        }`}
-      >
-        <Settings className="w-5 h-5" />
-        <span>Preferences</span>
-      </button>
-
-      <Separator className="my-2" />
-
-      <button
-        onClick={() => setIsAuditLogOpen(true)}
-        className="w-full flex items-center gap-3 px-3 py-3 rounded-lg transition-colors text-[#64748b] hover:bg-[#f8fafc]"
-      >
-        <History className="w-5 h-5" />
-        <span>Audit Log</span>
-      </button>
-    </nav>
-  );
-
-  // Agencies Tab Content
-  const renderAgenciesTab = () => (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
-      {/* Compliance Alert */}
-      {complianceRisks > 0 && (
-        <div className="bg-[#FEF2F2] border border-[#FCA5A5] rounded-xl p-4 mb-6 flex items-start gap-3">
-          <AlertTriangle className="w-5 h-5 text-[#DC2626] mt-0.5 flex-shrink-0" />
-          <div className="flex-1">
-            <h3 className="text-[#DC2626] mb-1">
-              {complianceRisks} Compliance Risk{complianceRisks !== 1 ? 's' : ''} Detected
-            </h3>
-            <p className="text-sm text-[#7F1D1D]">
-              {baaPending > 0 && `${baaPending} pending BAA${baaPending !== 1 ? 's' : ''}. `}
-              {baaExpiring > 0 && `${baaExpiring} BAA${baaExpiring !== 1 ? 's' : ''} expiring soon. `}
-              {suspendedOrAtRisk > 0 && `${suspendedOrAtRisk} suspended/at-risk ${suspendedOrAtRisk !== 1 ? 'agencies' : 'agency'}. `}
-              {totalUnverifiedUsers > 5 && `${totalUnverifiedUsers} unverified users across system.`}
-            </p>
-          </div>
-          <Button variant="outline" size="sm" className="border-[#DC2626] text-[#DC2626] hover:bg-[#FEE2E2] hidden sm:flex">
-            View Details
-          </Button>
-        </div>
-      )}
-
-      {/* Timeframe Toggle */}
-      <div className="flex items-center justify-between mb-4">
-        <h3 className="text-sm text-[#64748b]">Key Metrics</h3>
-        <div className="flex items-center gap-1 p-1 bg-white border border-[#e2e8f0] rounded-lg">
-          {(['7d', '30d', 'YTD'] as TimeframeType[]).map((tf) => (
-            <button
-              key={tf}
-              onClick={() => setTimeframe(tf)}
-              className={`px-3 py-1 text-xs rounded transition-colors ${
-                timeframe === tf
-                  ? 'bg-[#0966CC] text-white shadow-sm'
-                  : 'text-[#64748b] hover:text-[#0f172a] hover:bg-[#f8fafc]'
-              }`}
-            >
-              {tf}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Enhanced Stats Grid */}
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 sm:gap-4 mb-8">
-        <div className="bg-white rounded-xl border border-[#e2e8f0] p-4">
-          <div className="flex items-center gap-2 mb-3">
-            <div className="w-10 h-10 rounded-xl bg-[#E0F2FE] flex items-center justify-center">
-              <Building2 className="w-5 h-5 text-[#0966CC]" />
-            </div>
-          </div>
-          <p className="text-2xl text-[#0f172a] mb-1">{totalAgencies}</p>
-          <p className="text-xs text-[#64748b]">Total Agencies</p>
-        </div>
-
-        <div className="bg-white rounded-xl border border-[#e2e8f0] p-4">
-          <div className="flex items-center gap-2 mb-3">
-            <div className="w-10 h-10 rounded-xl bg-[#D1FAE5] flex items-center justify-center">
-              <CheckCircle2 className="w-5 h-5 text-[#10B981]" />
-            </div>
-          </div>
-          <p className="text-2xl text-[#0f172a] mb-1">{activeAgencies}</p>
-          <p className="text-xs text-[#64748b]">Active</p>
-        </div>
-
-        <div className="bg-white rounded-xl border border-[#e2e8f0] p-4">
-          <div className="flex items-center gap-2 mb-3">
-            <div className="w-10 h-10 rounded-xl bg-[#FEF3C7] flex items-center justify-center">
-              <FileText className="w-5 h-5 text-[#F59E0B]" />
-            </div>
-          </div>
-          <p className="text-2xl text-[#0f172a] mb-1">{baaPending + baaExpiring}</p>
-          <p className="text-xs text-[#64748b]">Pending BAA</p>
-        </div>
-
-        <div className="bg-white rounded-xl border border-[#e2e8f0] p-4">
-          <div className="flex items-center gap-2 mb-3">
-            <div className="w-10 h-10 rounded-xl bg-[#FEE2E2] flex items-center justify-center">
-              <AlertTriangle className="w-5 h-5 text-[#DC2626]" />
-            </div>
-          </div>
-          <p className="text-2xl text-[#0f172a] mb-1">{suspendedOrAtRisk}</p>
-          <p className="text-xs text-[#64748b]">Suspended / At-Risk</p>
-        </div>
-
-        <div className="bg-white rounded-xl border border-[#e2e8f0] p-4">
-          <div className="flex items-center gap-2 mb-3">
-            <div className="w-10 h-10 rounded-xl bg-[#DBEAFE] flex items-center justify-center">
-              <Users className="w-5 h-5 text-[#1E40AF]" />
-            </div>
-          </div>
-          <p className="text-2xl text-[#0f172a] mb-1">{totalClinicians}</p>
-          <p className="text-xs text-[#64748b]">Total Clinicians</p>
-        </div>
-      </div>
-
-      {/* Docs Metric with Timeframe */}
-      <div className="grid grid-cols-1 gap-3 sm:gap-4 mb-8">
-        <div className="bg-white rounded-xl border border-[#e2e8f0] p-4">
-          <div className="flex items-center gap-2 mb-3">
-            <div className="w-10 h-10 rounded-xl bg-[#F3E8FF] flex items-center justify-center">
-              <FileText className="w-5 h-5 text-[#7C3AED]" />
-            </div>
-          </div>
-          <p className="text-2xl text-[#0f172a] mb-1">{getDocsToday()}</p>
-          <p className="text-xs text-[#64748b]">Total Docs ({timeframe})</p>
-        </div>
-      </div>
-
-      {/* Inline Filter Tags */}
-      <div className="flex items-center gap-2 mb-4 flex-wrap">
-        <span className="text-sm text-[#64748b]">Quick filters:</span>
-        {getStatusBadge('Active', true)}
-        {getEnvironmentBadge('Test', true)}
-        {getEnvironmentBadge('Production', true)}
-        {getStatusBadge('At-Risk', true)}
-        {getEnvironmentBadge('Onboarding', true)}
-      </div>
-
-      {/* Active Filters Display */}
-      {activeFilters.length > 0 && (
-        <div className="flex items-center gap-2 mb-4 p-3 bg-[#f8fafc] rounded-lg border border-[#e2e8f0]">
-          <span className="text-sm text-[#64748b]">Active filters:</span>
-          {activeFilters.map((filter) => (
-            <Badge key={filter} className="bg-[#0966CC] text-white border-[#0966CC] gap-1">
-              {filter}
-              <button onClick={() => removeFilter(filter)} className="hover:opacity-70">
-                <X className="w-3 h-3" />
-              </button>
-            </Badge>
-          ))}
-          <button
-            onClick={() => setActiveFilters([])}
-            className="text-xs text-[#64748b] hover:text-[#0f172a] ml-auto"
-          >
-            Clear all
-          </button>
-        </div>
-      )}
-
-      {/* All Agencies */}
-      <div className="bg-white rounded-xl border border-[#e2e8f0]">
-        <div className="border-b border-[#e2e8f0] px-4 sm:px-6 py-4">
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-            <h2 className="text-lg sm:text-xl text-[#0f172a]">All Agencies</h2>
-            <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
-              {/* Search with Cmd+K hint */}
-              <div className="relative flex-1 sm:w-64">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#64748b]" />
-                <Input
-                  type="text"
-                  placeholder="Search or press Cmd+K..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  onFocus={() => setIsCommandPaletteOpen(true)}
-                  className="pl-10 border-[#e2e8f0] h-9"
-                />
-              </div>
-
-              {/* Filters */}
-              <div className="flex gap-2">
-                <Select value={statusFilter} onValueChange={setStatusFilter}>
-                  <SelectTrigger className="w-[130px] h-9 border-[#e2e8f0]">
-                    <SelectValue placeholder="Status" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All Status</SelectItem>
-                    <SelectItem value="Active">Active</SelectItem>
-                    <SelectItem value="Inactive">Inactive</SelectItem>
-                    <SelectItem value="Suspended">Suspended</SelectItem>
-                    <SelectItem value="At-Risk">At-Risk</SelectItem>
-                  </SelectContent>
-                </Select>
-
-                <Select value={environmentFilter} onValueChange={setEnvironmentFilter}>
-                  <SelectTrigger className="w-[140px] h-9 border-[#e2e8f0]">
-                    <SelectValue placeholder="Environment" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All Env</SelectItem>
-                    <SelectItem value="Production">Production</SelectItem>
-                    <SelectItem value="Test">Test</SelectItem>
-                    <SelectItem value="Trial">Trial</SelectItem>
-                    <SelectItem value="Onboarding">Onboarding</SelectItem>
-                  </SelectContent>
-                </Select>
-
-                <Button
-                  onClick={handleExportCSV}
-                  variant="outline"
-                  size="sm"
-                  className="h-9 border-[#e2e8f0]"
-                >
-                  <Download className="w-4 h-4 mr-1" />
-                  <span className="hidden sm:inline">Export</span>
-                </Button>
-
-                <Button
-                  onClick={() => setIsAddAgencyModalOpen(true)}
-                  className="bg-[#0966CC] hover:bg-[#0C4A6E] text-white h-9"
-                  size="sm"
-                >
-                  <Plus className="w-4 h-4 mr-1" />
-                  <span className="hidden sm:inline">Add Agency</span>
-                  <span className="sm:hidden">Add</span>
-                </Button>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div className="divide-y divide-[#e2e8f0]">
-          {filteredAgencies.length === 0 ? (
-            <div className="p-12 text-center">
-              <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-[#f8fafc] flex items-center justify-center">
-                <Building2 className="w-8 h-8 text-[#94a3b8]" />
-              </div>
-              <h3 className="text-lg text-[#0f172a] mb-2">No agencies found</h3>
-              <p className="text-sm text-[#64748b] mb-4">
-                {searchQuery ? 'Try adjusting your search or filters' : 'Get started by adding your first agency'}
-              </p>
-              {!searchQuery && (
-                <Button
-                  onClick={() => setIsAddAgencyModalOpen(true)}
-                  className="bg-[#0966CC] hover:bg-[#0C4A6E] text-white"
-                >
-                  <Plus className="w-4 h-4 mr-2" />
-                  Add Agency
-                </Button>
-              )}
-            </div>
-          ) : (
-            filteredAgencies.map((agency) => (
-              <div key={agency.id} className="p-4 sm:p-6 hover:bg-[#f8fafc] transition-colors">
-                <div className="flex flex-col gap-4">
-                  {/* Header Row */}
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="flex items-start gap-3 flex-1">
-                      {/* Agency Logo Placeholder */}
-                      <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-[#0966CC] to-[#0C4A6E] flex items-center justify-center text-white flex-shrink-0">
-                        {agency.name.substring(0, 2).toUpperCase()}
-                      </div>
-                      <div className="flex-1">
-                        <div className="flex items-center gap-2 mb-2 flex-wrap">
-                          <h3 className="text-base sm:text-lg text-[#0f172a]">{agency.name}</h3>
-                          {getStatusBadge(agency.status)}
-                          {getEnvironmentBadge(agency.environment)}
-                          {getSecurityPosture(agency)}
-                        </div>
-                        <div className="flex items-center gap-4 text-sm text-[#64748b] flex-wrap">
-                          <span>{agency.subdomain}</span>
-                          <span>•</span>
-                          <span>{agency.contact}</span>
-                          {agency.region && (
-                            <>
-                              <span>•</span>
-                              <span>{agency.region}</span>
-                            </>
-                          )}
-                        </div>
-                        {/* Onboarding Progress for non-complete agencies */}
-                        {agency.onboardingComplete < 100 && (
-                          <div className="mt-2">
-                            <div className="flex items-center justify-between text-xs text-[#64748b] mb-1">
-                              <span>Onboarding Progress</span>
-                              <span>{agency.onboardingComplete}%</span>
-                            </div>
-                            <div className="w-full h-2 bg-[#f1f5f9] rounded-full overflow-hidden">
-                              <div
-                                className="h-full bg-[#0966CC] transition-all"
-                                style={{ width: `${agency.onboardingComplete}%` }}
-                              />
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                      {getHealthStatus(agency.systemHealth)}
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button variant="outline" size="sm" className="h-8 w-8 p-0">
-                            <MoreVertical className="w-4 h-4" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end" className="w-56">
-                          <DropdownMenuLabel>Quick Actions</DropdownMenuLabel>
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem onClick={() => navigation.navigate('EditAgency', { agencyId: agency.id, agencyData: agency })}>
-                            <Settings className="w-4 h-4 mr-2" />
-                            Agency Settings
-                          </DropdownMenuItem>
-                          <DropdownMenuItem>
-                            <Users className="w-4 h-4 mr-2" />
-                            Manage Users
-                          </DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => navigation.navigate('AgencyAnalytics', { agencyId: agency.id, agencyName: agency.name })}>
-                            <Activity className="w-4 h-4 mr-2" />
-                            View Analytics
-                          </DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => setIsAuditLogOpen(true)}>
-                            <FileText className="w-4 h-4 mr-2" />
-                            View Audit Log
-                          </DropdownMenuItem>
-                          {agency.baaStatus !== 'BAA Not Signed' && (
-                            <DropdownMenuItem onClick={() => setSelectedBaaAgency(agency)}>
-                              <Download className="w-4 h-4 mr-2" />
-                              View BAA Document
-                            </DropdownMenuItem>
-                          )}
-                          <DropdownMenuItem 
-                            onClick={() => {
-                              setFeatureFlagsAgency(agency);
-                              setIsFeatureFlagsOpen(true);
-                            }}
-                          >
-                            <Flag className="w-4 h-4 mr-2" />
-                            Feature Flags
-                          </DropdownMenuItem>
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem
-                            onClick={() => {
-                              setImpersonateAgency(agency);
-                              setIsImpersonateOpen(true);
-                            }}
-                            className="text-[#F59E0B]"
-                          >
-                            <Eye className="w-4 h-4 mr-2" />
-                            Impersonate
-                          </DropdownMenuItem>
-                          <DropdownMenuItem
-                            onClick={() => {
-                              setSuspendAgency(agency);
-                              setIsSuspendDialogOpen(true);
-                            }}
-                            className="text-[#DC2626]"
-                          >
-                            {agency.status === 'Suspended' ? (
-                              <>
-                                <PlayCircle className="w-4 h-4 mr-2" />
-                                Unsuspend Agency
-                              </>
-                            ) : (
-                              <>
-                                <Ban className="w-4 h-4 mr-2" />
-                                Suspend Agency
-                              </>
-                            )}
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </div>
-                  </div>
-
-                  {/* Info Grid */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-x-6 gap-y-3 text-sm">
-                    {/* BAA Status with Tooltip */}
-                    <div>
-                      <div className="flex items-center gap-1 text-[#64748b] mb-1">
-                        <span>BAA Status</span>
-                        <TooltipProvider>
-                          <Tooltip>
-                            <TooltipTrigger>
-                              <Info className="w-3 h-3" />
-                            </TooltipTrigger>
-                            <TooltipContent>
-                              <p>Business Associate Agreement. Click to view details.</p>
-                            </TooltipContent>
-                          </Tooltip>
-                        </TooltipProvider>
-                      </div>
-                      {agency.baaStatus !== 'BAA Not Signed' ? (
-                        <button
-                          onClick={() => setSelectedBaaAgency(agency)}
-                          className={`flex items-center gap-1 hover:underline ${
-                            agency.baaStatus === 'BAA Expiring Soon' ? 'text-[#F59E0B]' : 'text-[#10B981]'
-                          }`}
-                        >
-                          <FileText className="w-3 h-3" />
-                          {agency.baaStatus === 'BAA Expiring Soon' ? 'Expiring' : 'Signed'}
-                          <ExternalLink className="w-3 h-3" />
-                        </button>
-                      ) : (
-                        <span className="text-[#DC2626]">Not Signed</span>
-                      )}
-                    </div>
-
-                    {/* Billing Plan with Usage */}
-                    <div>
-                      <div className="text-[#64748b] mb-1">Plan & Usage</div>
-                      <div className="text-[#0f172a]">
-                        {agency.billingPlan}
-                        <span className={`text-xs ml-1 ${
-                          agency.seatsUsed >= agency.seats ? 'text-[#DC2626]' : 'text-[#64748b]'
-                        }`}>
-                          ({agency.seatsUsed}/{agency.seats})
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* Renewal */}
-                    {agency.renewal && (
-                      <div>
-                        <div className="text-[#64748b] mb-1">Renewal</div>
-                        <div className="text-[#0f172a]">{agency.renewal}</div>
-                      </div>
-                    )}
-
-                    {/* Last Active */}
-                    {agency.lastActive && (
-                      <div>
-                        <div className="text-[#64748b] mb-1">Last Active</div>
-                        <div className="flex items-center gap-1 text-[#0f172a]">
-                          <Clock className="w-3 h-3" />
-                          {agency.lastActive}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Last Import with Health */}
-                    {agency.lastImport && (
-                      <div>
-                        <div className="text-[#64748b] mb-1">Last Import</div>
-                        <div className={`flex items-center gap-1 ${
-                          agency.lastImportSuccess === false ? 'text-[#DC2626]' : 'text-[#0f172a]'
-                        }`}>
-                          <Activity className="w-3 h-3" />
-                          {agency.lastImport}
-                          {agency.lastImportSuccess === false && (
-                            <TooltipProvider>
-                              <Tooltip>
-                                <TooltipTrigger>
-                                  <AlertTriangle className="w-3 h-3 text-[#DC2626]" />
-                                </TooltipTrigger>
-                                <TooltipContent>
-                                  <p>Ingestion failing in last hour</p>
-                                </TooltipContent>
-                              </Tooltip>
-                            </TooltipProvider>
-                          )}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Clinician Count */}
-                    <div>
-                      <div className="text-[#64748b] mb-1">Clinicians</div>
-                      <div className="flex items-center gap-1 text-[#0f172a]">
-                        <Users className="w-3 h-3" />
-                        {agency.clinicianCount}
-                      </div>
-                    </div>
-
-                    {/* Unverified Users with Tooltip */}
-                    {agency.unverifiedUsers > 0 && (
-                      <div>
-                        <div className="flex items-center gap-1 text-[#64748b] mb-1">
-                          <span>Unverified Users</span>
-                          <TooltipProvider>
-                            <Tooltip>
-                              <TooltipTrigger>
-                                <Info className="w-3 h-3" />
-                              </TooltipTrigger>
-                              <TooltipContent>
-                                <p>Users who haven't completed email/MFA verification</p>
-                              </TooltipContent>
-                            </Tooltip>
-                          </TooltipProvider>
-                        </div>
-                        <div className="flex items-center gap-1 text-[#F59E0B]">
-                          <AlertTriangle className="w-3 h-3" />
-                          {agency.unverifiedUsers}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* MFA Percentage */}
-                    <div>
-                      <div className="text-[#64748b] mb-1">MFA Coverage</div>
-                      <div className={`${
-                        agency.mfaPercentage >= 90 ? 'text-[#10B981]' : 
-                        agency.mfaPercentage >= 70 ? 'text-[#F59E0B]' : 
-                        'text-[#DC2626]'
-                      }`}>
-                        {agency.mfaPercentage}%
-                      </div>
-                    </div>
-
-                    {/* Created */}
-                    <div>
-                      <div className="text-[#64748b] mb-1">Created</div>
-                      <div className="text-[#0f172a]">{agency.created}</div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            ))
-          )}
-        </div>
-      </div>
-    </div>
-  );
-
-  // Enhanced Profile Tab (Account Hub)
-  const renderProfileTab = () => (
-    <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
-      {/* Welcome Section */}
-      <div className="bg-white rounded-xl border border-[#e2e8f0] p-6 mb-6">
-        <div className="flex items-center gap-4 mb-4">
-          <Avatar className="w-16 h-16 bg-[#0966CC]">
-            <AvatarFallback className="bg-[#0966CC] text-white text-xl">SA</AvatarFallback>
-          </Avatar>
-          <div>
-            <p className="text-sm text-[#64748b] mb-1">Welcome back,</p>
-            <h2 className="text-2xl text-[#0f172a]">System Administrator</h2>
-          </div>
-        </div>
-      </div>
-
-      {/* Profile Info Card */}
-      <div className="bg-white rounded-xl border border-[#e2e8f0] p-6 mb-6">
-        <div className="flex items-center gap-3 mb-6">
-          <Avatar className="w-12 h-12 bg-[#0966CC]">
-            <AvatarFallback className="bg-[#0966CC] text-white">SA</AvatarFallback>
-          </Avatar>
-          <div>
-            <h3 className="text-lg text-[#0f172a]">Account Information</h3>
-            <p className="text-sm text-[#64748b]">View and manage your account details</p>
-          </div>
-        </div>
-
-        <div className="space-y-6">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
-            <div>
-              <Label className="text-sm text-[#64748b] mb-2 block">Name</Label>
-              <p className="text-[#0f172a]">System Administrator</p>
-            </div>
-            <div>
-              <Label className="text-sm text-[#64748b] mb-2 block">Role</Label>
-              <Badge className="bg-[#0966CC] text-white border-[#0966CC]">
-                Super Admin
-              </Badge>
-            </div>
-          </div>
-
-          <div>
-            <Label className="text-sm text-[#64748b] mb-2 block">Email</Label>
-            <p className="text-[#0f172a]">admin@luminous.com</p>
-          </div>
-
-          <div>
-            <Label className="text-sm text-[#64748b] mb-2 block">Access Level</Label>
-            <p className="text-[#0f172a]">Full System Access</p>
-          </div>
-
-          <div>
-            <Label className="text-sm text-[#64748b] mb-2 block">Agencies Managed</Label>
-            <p className="text-[#0f172a]">{totalAgencies} agencies</p>
-          </div>
-        </div>
-      </div>
-
-      {/* MFA Status */}
-      <div className="bg-white rounded-xl border border-[#e2e8f0] p-6 mb-6">
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-3">
-            <div className="w-12 h-12 rounded-xl bg-[#D1FAE5] flex items-center justify-center">
-              <Shield className="w-6 h-6 text-[#10B981]" />
-            </div>
-            <div>
-              <h3 className="text-lg text-[#0f172a]">Multi-Factor Authentication</h3>
-              <p className="text-sm text-[#64748b]">Your account is protected</p>
-            </div>
-          </div>
-          <Badge className="bg-[#D1FAE5] text-[#047857] border-[#A7F3D0]">
-            <CheckCircle2 className="w-3 h-3 mr-1" />
-            Enabled
-          </Badge>
-        </div>
-        <div className="space-y-3 text-sm">
-          <div className="flex items-center justify-between">
-            <span className="text-[#64748b]">Primary Method</span>
-            <span className="text-[#0f172a]">Authenticator App</span>
-          </div>
-          <div className="flex items-center justify-between">
-            <span className="text-[#64748b]">Backup Codes</span>
-            <Button variant="outline" size="sm" className="h-8">
-              <Download className="w-3 h-3 mr-1" />
-              Download
-            </Button>
-          </div>
-        </div>
-      </div>
-
-      {/* Last Login */}
-      <div className="bg-white rounded-xl border border-[#e2e8f0] p-6 mb-6">
-        <div className="flex items-center gap-3 mb-4">
-          <div className="w-12 h-12 rounded-xl bg-[#FEF3C7] flex items-center justify-center">
-            <Clock className="w-6 h-6 text-[#F59E0B]" />
-          </div>
-          <div>
-            <h3 className="text-lg text-[#0f172a]">Last Login</h3>
-            <p className="text-sm text-[#64748b]">Track your recent access</p>
-          </div>
-        </div>
-        <div className="space-y-2 text-sm">
-          <div className="flex items-center gap-2 text-[#64748b]">
-            <Monitor className="w-4 h-4" />
-            <span>Chrome on MacOS</span>
-          </div>
-          <div className="flex items-center gap-2 text-[#64748b]">
-            <span>📍 San Francisco, CA</span>
-          </div>
-          <div className="flex items-center gap-2 text-[#64748b]">
-            <span>🕒 Today at 9:42 AM</span>
-          </div>
-        </div>
-      </div>
-
-      {/* Active Sessions */}
-      <div className="bg-white rounded-xl border border-[#e2e8f0] p-6 mb-6">
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-3">
-            <div className="w-12 h-12 rounded-xl bg-[#DBEAFE] flex items-center justify-center">
-              <Monitor className="w-6 h-6 text-[#0966CC]" />
-            </div>
-            <div>
-              <h3 className="text-lg text-[#0f172a]">Active Sessions</h3>
-              <p className="text-sm text-[#64748b]">Manage your active sessions</p>
-            </div>
-          </div>
-        </div>
-        <div className="space-y-3">
-          {activeSessions.map((session) => (
-            <div key={session.id} className="flex items-center justify-between p-3 border border-[#e2e8f0] rounded-lg">
-              <div className="flex items-start gap-3">
-                <div className="w-10 h-10 rounded-lg bg-[#f8fafc] flex items-center justify-center">
-                  {session.device.includes('iPhone') ? (
-                    <Smartphone className="w-5 h-5 text-[#64748b]" />
-                  ) : (
-                    <Monitor className="w-5 h-5 text-[#64748b]" />
-                  )}
-                </div>
-                <div>
-                  <p className="text-sm text-[#0f172a] mb-1">
-                    {session.device}
-                    {session.current && (
-                      <Badge className="ml-2 bg-[#D1FAE5] text-[#047857] border-[#A7F3D0] text-xs">
-                        Current
-                      </Badge>
-                    )}
-                  </p>
-                  <p className="text-xs text-[#64748b]">{session.location}</p>
-                  <p className="text-xs text-[#64748b]">{session.lastActive}</p>
-                </div>
-              </div>
-              {!session.current && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-8 text-[#DC2626] border-[#DC2626] hover:bg-[#FEE2E2]"
-                  onClick={() => handleRevokeSession(session.id)}
-                >
-                  Revoke
-                </Button>
-              )}
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* API Token Management */}
-      <div className="bg-white rounded-xl border border-[#e2e8f0] p-6">
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-3">
-            <div className="w-12 h-12 rounded-xl bg-[#FEE2E2] flex items-center justify-center">
-              <Key className="w-6 h-6 text-[#DC2626]" />
-            </div>
-            <div>
-              <h3 className="text-lg text-[#0f172a]">API Tokens</h3>
-              <p className="text-sm text-[#64748b]">Manage your API access tokens</p>
-            </div>
-          </div>
-          <Button size="sm" className="bg-[#0966CC] hover:bg-[#0C4A6E] text-white">
-            <Plus className="w-4 h-4 mr-1" />
-            Generate Token
-          </Button>
-        </div>
-        <div className="text-sm text-[#64748b] text-center py-8 border border-dashed border-[#e2e8f0] rounded-lg">
-          <Key className="w-8 h-8 text-[#94a3b8] mx-auto mb-2" />
-          <p>No API tokens generated yet</p>
-          <p className="text-xs mt-1">Create a token to access the Luminous API</p>
-        </div>
-      </div>
-    </div>
-  );
-
-  // Enhanced Settings Tab (Preferences)
-  const renderSettingsTab = () => (
-    <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
-      {/* Appearance */}
-      <div className="bg-white rounded-xl border border-[#e2e8f0] p-6 mb-6">
-        <div className="flex items-center gap-3 mb-6">
-          <div className="w-12 h-12 rounded-xl bg-[#DBEAFE] flex items-center justify-center">
-            {darkMode ? <Moon className="w-6 h-6 text-[#0966CC]" /> : <Sun className="w-6 h-6 text-[#0966CC]" />}
-          </div>
-          <div>
-            <h3 className="text-lg text-[#0f172a]">Appearance</h3>
-            <p className="text-sm text-[#64748b]">Customize how Luminous looks to you</p>
-          </div>
-        </div>
-
-        <div className="flex items-center justify-between">
-          <div>
-            <Label className="text-sm text-[#0f172a] mb-1 block">Dark Mode</Label>
-            <p className="text-xs text-[#64748b]">Switch between light and dark themes</p>
-          </div>
-          <Switch checked={darkMode} onCheckedChange={setDarkMode} />
-        </div>
-      </div>
-
-      {/* Default Preferences */}
-      <div className="bg-white rounded-xl border border-[#e2e8f0] p-6 mb-6">
-        <div className="flex items-center gap-3 mb-6">
-          <div className="w-12 h-12 rounded-xl bg-[#D1FAE5] flex items-center justify-center">
-            <Settings className="w-6 h-6 text-[#10B981]" />
-          </div>
-          <div>
-            <h3 className="text-lg text-[#0f172a]">Default Preferences</h3>
-            <p className="text-sm text-[#64748b]">Set your default view options</p>
-          </div>
-        </div>
-
-        <div className="space-y-6">
-          <div>
-            <Label className="text-sm text-[#0f172a] mb-2 block">Default Agency List Sort</Label>
-            <Select value={defaultSort} onValueChange={setDefaultSort}>
-              <SelectTrigger className="border-[#e2e8f0]">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="created">Most Recent</SelectItem>
-                <SelectItem value="name">Alphabetical</SelectItem>
-                <SelectItem value="activity">Last Active</SelectItem>
-                <SelectItem value="status">Status</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-
-          <div>
-            <Label className="text-sm text-[#0f172a] mb-2 block">Default Analytics Window</Label>
-            <Select value={defaultAnalyticsWindow} onValueChange={setDefaultAnalyticsWindow}>
-              <SelectTrigger className="border-[#e2e8f0]">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="7d">Last 7 Days</SelectItem>
-                <SelectItem value="30d">Last 30 Days</SelectItem>
-                <SelectItem value="90d">Last 90 Days</SelectItem>
-                <SelectItem value="YTD">Year to Date</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-
-          <div>
-            <Label className="text-sm text-[#0f172a] mb-2 block">Email Digest Frequency</Label>
-            <Select value={emailDigestFrequency} onValueChange={setEmailDigestFrequency}>
-              <SelectTrigger className="border-[#e2e8f0]">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="realtime">Real-time</SelectItem>
-                <SelectItem value="daily">Daily</SelectItem>
-                <SelectItem value="weekly">Weekly</SelectItem>
-                <SelectItem value="never">Never</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
-      </div>
-
-      {/* Change Password Card */}
-      <div className="bg-white rounded-xl border border-[#e2e8f0] p-6 mb-6">
-        <div className="flex items-center gap-3 mb-6">
-          <div className="w-12 h-12 rounded-xl bg-[#FEF3C7] flex items-center justify-center">
-            <Lock className="w-6 h-6 text-[#F59E0B]" />
-          </div>
-          <div>
-            <h3 className="text-lg text-[#0f172a]">Change Password</h3>
-            <p className="text-sm text-[#64748b]">Update your password to keep your account secure</p>
-          </div>
-        </div>
-
-        <div className="space-y-4">
-          <div>
-            <Label htmlFor="current-password" className="text-sm text-[#64748b] mb-2 block">
-              Current Password
-            </Label>
-            <Input
-              id="current-password"
-              type="password"
-              placeholder="Enter current password"
-              className="border-[#e2e8f0]"
-            />
-          </div>
-
-          <div>
-            <Label htmlFor="new-password" className="text-sm text-[#64748b] mb-2 block">
-              New Password
-            </Label>
-            <Input
-              id="new-password"
-              type="password"
-              placeholder="Enter new password"
-              className="border-[#e2e8f0]"
-            />
-          </div>
-
-          <div>
-            <Label htmlFor="confirm-password" className="text-sm text-[#64748b] mb-2 block">
-              Confirm New Password
-            </Label>
-            <Input
-              id="confirm-password"
-              type="password"
-              placeholder="Confirm new password"
-              className="border-[#e2e8f0]"
-            />
-          </div>
-
-          <Button className="w-full bg-[#0966CC] hover:bg-[#0C4A6E] text-white">
-            Update Password
-          </Button>
-        </div>
-      </div>
-
-
-    </div>
-  );
+  }
 
   return (
-    <div className="flex h-screen bg-[#f8fafc]">
-      {/* Desktop Sidebar */}
-      <aside className="hidden md:flex md:w-64 flex-col border-r border-[#e2e8f0] bg-white">
-        <div className="p-6 border-b border-[#e2e8f0]">
-          <div className="flex items-center gap-2">
-            <div className="w-10 h-10 rounded-xl bg-[#0966CC] flex items-center justify-center">
-              <Zap className="w-6 h-6 text-white" />
-            </div>
-            <div>
-              <h1 className="text-lg text-[#0f172a]">Luminous</h1>
-              <p className="text-xs text-[#64748b]">Super Admin</p>
-            </div>
-          </div>
-        </div>
-
-        <div className="flex-1 overflow-y-auto p-4">{renderSidebarNav()}</div>
-
-        <div className="p-4 border-t border-[#e2e8f0]">
-          <button
-            onClick={handleSignOut}
-            className="w-full flex items-center gap-3 px-3 py-3 rounded-lg text-[#DC2626] hover:bg-[#FEE2E2] transition-colors"
-          >
-            <LogOut className="w-5 h-5" />
-            <span>Sign Out</span>
-          </button>
-        </div>
-      </aside>
-
-      {/* Main Content */}
-      <div className="flex-1 flex flex-col overflow-hidden">
-        {/* Header */}
-        <header className="bg-white border-b border-[#e2e8f0] px-4 sm:px-6 py-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <button
-                onClick={() => setIsDrawerOpen(true)}
-                className="md:hidden p-2 hover:bg-[#f8fafc] rounded-lg transition-colors"
-              >
-                <Menu className="w-6 h-6 text-[#64748b]" />
-              </button>
-              <h1 className="text-xl sm:text-2xl text-[#0f172a]">
-                {activeTab === 'agencies' && 'Agency Management'}
-                {activeTab === 'profile' && 'Account Hub'}
-                {activeTab === 'settings' && 'Preferences'}
-              </h1>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <TooltipProvider>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="hidden sm:flex h-9 gap-2"
-                      onClick={() => setIsCommandPaletteOpen(true)}
-                    >
-                      <Search className="w-4 h-4" />
-                      <span className="text-xs text-[#64748b]">
-                        <kbd className="px-1.5 py-0.5 text-xs bg-[#f8fafc] border border-[#e2e8f0] rounded">⌘</kbd>
-                        <kbd className="px-1.5 py-0.5 text-xs bg-[#f8fafc] border border-[#e2e8f0] rounded ml-0.5">K</kbd>
-                      </span>
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    <p>Global search</p>
-                  </TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
-
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-9"
-                onClick={() => setIsAuditLogOpen(true)}
-              >
-                <History className="w-4 h-4 mr-1" />
-                <span className="hidden sm:inline">Audit Log</span>
-              </Button>
-
-              <Avatar className="w-9 h-9 bg-[#0966CC] md:hidden">
-                <AvatarFallback className="bg-[#0966CC] text-white text-sm">SA</AvatarFallback>
-              </Avatar>
-            </div>
-          </div>
-        </header>
-
-        {/* Tab Content */}
-        <main className="flex-1 overflow-y-auto">
-          {activeTab === 'agencies' && renderAgenciesTab()}
-          {activeTab === 'profile' && renderProfileTab()}
-          {activeTab === 'settings' && renderSettingsTab()}
-        </main>
-      </div>
-
-      {/* Mobile Drawer */}
-      <Sheet open={isDrawerOpen} onOpenChange={setIsDrawerOpen}>
-        <SheetContent side="left" className="w-64 p-0">
-          <SheetHeader className="p-6 border-b border-[#e2e8f0]">
-            <div className="flex items-center gap-2">
-              <div className="w-10 h-10 rounded-xl bg-[#0966CC] flex items-center justify-center">
-                <Zap className="w-6 h-6 text-white" />
-              </div>
-              <div>
-                <SheetTitle className="text-lg text-[#0f172a]">Luminous</SheetTitle>
-                <p className="text-xs text-[#64748b]">Super Admin</p>
-              </div>
-            </div>
-          </SheetHeader>
-
-          <div className="flex-1 overflow-y-auto p-4">{renderSidebarNav()}</div>
-
-          <div className="p-4 border-t border-[#e2e8f0]">
+    <div className="h-full flex flex-col bg-gradient-to-br from-slate-50 to-white">
+      <Toaster />
+      
+      {/* Header */}
+      <div className="bg-white border-b border-slate-200 px-6 py-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-4">
             <button
-              onClick={handleSignOut}
-              className="w-full flex items-center gap-3 px-3 py-3 rounded-lg text-[#DC2626] hover:bg-[#FEE2E2] transition-colors"
+              onClick={() => setIsDrawerOpen(true)}
+              className="lg:hidden p-2 hover:bg-slate-100 rounded-lg"
             >
-              <LogOut className="w-5 h-5" />
-              <span>Sign Out</span>
+              <Menu className="w-5 h-5" />
             </button>
-          </div>
-        </SheetContent>
-      </Sheet>
-
-      {/* Command Palette */}
-      <CommandPalette
-        isOpen={isCommandPaletteOpen}
-        onClose={() => setIsCommandPaletteOpen(false)}
-        agencies={agencies}
-        onSelectAgency={(agencyId) => {
-          const agency = agencies.find(a => a.id === agencyId);
-          if (agency) {
-            navigation.navigate('EditAgency', { agencyId, agencyData: agency });
-          }
-        }}
-      />
-
-      {/* Add Agency Modal */}
-      <Dialog open={isAddAgencyModalOpen} onOpenChange={setIsAddAgencyModalOpen}>
-        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>Add New Agency</DialogTitle>
-            <DialogDescription>
-              Create a new healthcare agency in the system
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-4 py-4">
             <div>
-              <Label htmlFor="agency-name" className="text-sm text-[#64748b] mb-2 block">
-                Agency Name *
-              </Label>
-              <Input
-                id="agency-name"
-                placeholder="e.g., Sunrise Healthcare"
-                value={formData.agencyName}
-                onChange={(e) => handleFormChange('agencyName', e.target.value)}
-                className="border-[#e2e8f0]"
-              />
-            </div>
-
-            <div>
-              <Label className="text-sm text-[#64748b] mb-2 block">Subdomain *</Label>
-              <div className="flex gap-2">
-                <Input
-                  placeholder="subdomain"
-                  value={formData.subdomain}
-                  onChange={(e) => handleFormChange('subdomain', e.target.value)}
-                  className="border-[#e2e8f0]"
-                />
-                <Select
-                  value={formData.domainSuffix}
-                  onValueChange={(value) => handleFormChange('domainSuffix', value)}
-                >
-                  <SelectTrigger className="w-[120px] border-[#e2e8f0]">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value=".app">.app</SelectItem>
-                    <SelectItem value=".health">.health</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <p className="text-xs text-[#64748b] mt-1">
-                Full URL: {formData.subdomain || 'subdomain'}{formData.domainSuffix}
-              </p>
-            </div>
-
-            <div>
-              <Label htmlFor="ein" className="text-sm text-[#64748b] mb-2 block">
-                EIN (Tax ID)
-              </Label>
-              <Input
-                id="ein"
-                placeholder="12-3456789"
-                value={formData.ein}
-                onChange={(e) => handleFormChange('ein', e.target.value)}
-                className="border-[#e2e8f0]"
-              />
-            </div>
-
-            <div>
-              <Label htmlFor="contact-email" className="text-sm text-[#64748b] mb-2 block">
-                Primary Contact Email *
-              </Label>
-              <Input
-                id="contact-email"
-                type="email"
-                placeholder="admin@agency.com"
-                value={formData.contactEmail}
-                onChange={(e) => handleFormChange('contactEmail', e.target.value)}
-                className="border-[#e2e8f0]"
-              />
-            </div>
-
-            <div>
-              <Label htmlFor="contact-phone" className="text-sm text-[#64748b] mb-2 block">
-                Contact Phone
-              </Label>
-              <Input
-                id="contact-phone"
-                type="tel"
-                placeholder="(555) 123-4567"
-                value={formData.contactPhone}
-                onChange={(e) => handleFormChange('contactPhone', e.target.value)}
-                className="border-[#e2e8f0]"
-              />
-            </div>
-
-            <Separator />
-
-            <div className="flex items-center justify-between">
-              <div>
-                <Label className="text-sm text-[#0f172a] mb-1 block">BAA Signed</Label>
-                <p className="text-xs text-[#64748b]">Has the Business Associate Agreement been signed?</p>
-              </div>
-              <Checkbox
-                checked={formData.baaSigned}
-                onCheckedChange={(checked) => handleFormChange('baaSigned', checked as boolean)}
-              />
-            </div>
-
-            <div className="flex items-center justify-between">
-              <div>
-                <Label className="text-sm text-[#0f172a] mb-1 block">Test Mode</Label>
-                <p className="text-xs text-[#64748b]">Create as a test/QA environment</p>
-              </div>
-              <Checkbox
-                checked={formData.testMode}
-                onCheckedChange={(checked) => handleFormChange('testMode', checked as boolean)}
-              />
+              <h1 className="text-2xl font-bold text-slate-900">Super Admin</h1>
+              <p className="text-sm text-slate-600">Platform Management & Oversight</p>
             </div>
           </div>
-
-          <DialogFooter>
+          <div className="flex items-center gap-3">
             <Button
               variant="outline"
-              onClick={() => setIsAddAgencyModalOpen(false)}
-              className="border-[#e2e8f0]"
+              size="sm"
+              onClick={() => loadData()}
+              className="flex items-center gap-2"
             >
-              Cancel
+              <RefreshCw className="w-4 h-4" />
+              Refresh
             </Button>
-            <Button
-              onClick={handleAddAgency}
-              className="bg-[#0966CC] hover:bg-[#0C4A6E] text-white"
-            >
-              <Plus className="w-4 h-4 mr-2" />
-              Create Agency
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* BAA Detail Modal */}
-      <Dialog open={!!selectedBaaAgency} onOpenChange={() => setSelectedBaaAgency(null)}>
-        <DialogContent className="max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>Business Associate Agreement</DialogTitle>
-            <DialogDescription>
-              BAA details for {selectedBaaAgency?.name}
-            </DialogDescription>
-          </DialogHeader>
-
-          {selectedBaaAgency && (
-            <div className="space-y-4 py-4">
-              <div className="flex items-center justify-between p-4 bg-[#f8fafc] rounded-lg">
-                <div className="flex items-center gap-3">
-                  <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${
-                    selectedBaaAgency.baaStatus === 'BAA Expiring Soon' ? 'bg-[#FEF3C7]' : 'bg-[#D1FAE5]'
-                  }`}>
-                    <FileText className={`w-6 h-6 ${
-                      selectedBaaAgency.baaStatus === 'BAA Expiring Soon' ? 'text-[#F59E0B]' : 'text-[#10B981]'
-                    }`} />
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button className="flex items-center gap-2 p-2 hover:bg-slate-100 rounded-lg">
+                  <Avatar className="w-8 h-8 bg-gradient-to-br from-[#0966CC] to-[#0C4A6E]">
+                    <AvatarFallback className="text-white text-sm">
+                      {user?.first_name?.[0]}{user?.last_name?.[0]}
+                    </AvatarFallback>
+                  </Avatar>
+                  <div className="text-left hidden sm:block">
+                    <p className="text-sm font-medium text-slate-900">
+                      {user?.first_name} {user?.last_name}
+                    </p>
+                    <p className="text-xs text-slate-500">Super Admin</p>
                   </div>
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-48">
+                <DropdownMenuLabel>My Account</DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={() => setActiveTab('profile')}>
+                  <User className="w-4 h-4 mr-2" />
+                  Profile
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setActiveTab('audit')}>
+                  <History className="w-4 h-4 mr-2" />
+                  Audit Logs
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={handleLogout} className="text-red-600">
+                  <LogOut className="w-4 h-4 mr-2" />
+                  Sign Out
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        </div>
+      </div>
+
+      {/* Navigation Tabs */}
+      <div className="bg-white border-b border-slate-200 px-6">
+        <div className="flex gap-6">
+          <button
+            onClick={() => setActiveTab('tenants')}
+            className={`py-3 px-1 border-b-2 text-sm font-medium transition-colors ${
+              activeTab === 'tenants'
+                ? 'border-[#0966CC] text-[#0966CC]'
+                : 'border-transparent text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <Building2 className="w-4 h-4 inline mr-2" />
+            Tenants ({stats.totalTenants})
+          </button>
+          <button
+            onClick={() => setActiveTab('audit')}
+            className={`py-3 px-1 border-b-2 text-sm font-medium transition-colors ${
+              activeTab === 'audit'
+                ? 'border-[#0966CC] text-[#0966CC]'
+                : 'border-transparent text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <History className="w-4 h-4 inline mr-2" />
+            Audit Logs
+          </button>
+          <button
+            onClick={() => setActiveTab('profile')}
+            className={`py-3 px-1 border-b-2 text-sm font-medium transition-colors ${
+              activeTab === 'profile'
+                ? 'border-[#0966CC] text-[#0966CC]'
+                : 'border-transparent text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <User className="w-4 h-4 inline mr-2" />
+            Profile
+          </button>
+        </div>
+      </div>
+
+      {/* Main Content - Part 1 */}
+      <div className="flex-1 overflow-y-auto p-6">
+        {activeTab === 'tenants' && (
+          <div className="space-y-6 max-w-7xl mx-auto">
+            {/* Stats Cards */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+              <Card className="p-4 border-l-4 border-l-green-500">
+                <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-sm text-[#0f172a] mb-1">{selectedBaaAgency.baaStatus}</p>
-                    <p className="text-xs text-[#64748b]">
-                      {selectedBaaAgency.baaStatus === 'BAA Expiring Soon' ? 'Renewal required soon' : 'Fully executed and compliant'}
+                    <p className="text-sm text-slate-600">Active Tenants</p>
+                    <p className="text-2xl font-bold text-slate-900">{stats.activeTenants}</p>
+                  </div>
+                  <Building2 className="w-8 h-8 text-green-500" />
+                </div>
+              </Card>
+              
+              <Card className="p-4 border-l-4 border-l-red-500">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm text-slate-600">Missing BAA</p>
+                    <p className="text-2xl font-bold text-slate-900">{stats.baaPending}</p>
+                  </div>
+                  <AlertTriangle className="w-8 h-8 text-red-500" />
+                </div>
+              </Card>
+              
+              <Card className="p-4 border-l-4 border-l-blue-500">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm text-slate-600">Total Users</p>
+                    <p className="text-2xl font-bold text-slate-900">{stats.totalUsers}</p>
+                  </div>
+                  <Users className="w-8 h-8 text-blue-500" />
+                </div>
+              </Card>
+              
+              <Card className="p-4 border-l-4 border-l-purple-500">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm text-slate-600">Total Charts</p>
+                    <p className="text-2xl font-bold text-slate-900">{stats.totalCharts}</p>
+                  </div>
+                  <FileText className="w-8 h-8 text-purple-500" />
+                </div>
+              </Card>
+            </div>
+
+            {/* Compliance Alert */}
+            {(stats.baaPending > 0 || stats.baaExpiring > 0) && (
+              <Card className="p-4 bg-red-50 border-red-200">
+                <div className="flex items-start gap-3">
+                  <AlertCircle className="w-5 h-5 text-red-600 mt-0.5 shrink-0" />
+                  <div>
+                    <p className="font-semibold text-red-900">Compliance Risks Detected</p>
+                    <p className="text-sm text-red-700 mt-1">
+                      {stats.baaPending > 0 && `${stats.baaPending} tenant${stats.baaPending !== 1 ? 's' : ''} missing BAA. `}
+                      {stats.baaExpiring > 0 && `${stats.baaExpiring} BAA${stats.baaExpiring !== 1 ? 's' : ''} expiring soon.`}
                     </p>
                   </div>
                 </div>
-                <Badge className={
-                  selectedBaaAgency.baaStatus === 'BAA Expiring Soon' 
-                    ? 'bg-[#FEF3C7] text-[#B45309] border-[#FDE68A]'
-                    : 'bg-[#D1FAE5] text-[#047857] border-[#A7F3D0]'
-                }>
-                  {selectedBaaAgency.baaStatus === 'BAA Expiring Soon' ? 'Expiring' : 'Active'}
-                </Badge>
-              </div>
+              </Card>
+            )}
 
-              <div className="space-y-3 text-sm">
-                <div className="flex items-center justify-between p-3 border border-[#e2e8f0] rounded-lg">
-                  <span className="text-[#64748b]">Signed Date</span>
-                  <span className="text-[#0f172a]">{selectedBaaAgency.baaSignedDate}</span>
-                </div>
-
-                <div className="flex items-center justify-between p-3 border border-[#e2e8f0] rounded-lg">
-                  <span className="text-[#64748b]">Signatory</span>
-                  <span className="text-[#0f172a]">{selectedBaaAgency.baaSignedBy}</span>
-                </div>
-
-                {selectedBaaAgency.baaRenewedDate && (
-                  <div className="flex items-center justify-between p-3 border border-[#e2e8f0] rounded-lg">
-                    <span className="text-[#64748b]">Last Renewed</span>
-                    <span className="text-[#0f172a]">{selectedBaaAgency.baaRenewedDate}</span>
+            {/* Filters and Actions */}
+            <Card className="p-4">
+              <div className="flex flex-col md:flex-row gap-4 md:items-center md:justify-between">
+                <div className="flex-1 flex flex-col sm:flex-row gap-3">
+                  <div className="flex-1">
+                    <div className="relative">
+                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                      <Input
+                        placeholder="Search tenants..."
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        className="pl-10"
+                      />
+                    </div>
                   </div>
-                )}
-
-                <div className="flex items-center justify-between p-3 border border-[#e2e8f0] rounded-lg">
-                  <span className="text-[#64748b]">Document</span>
-                  <Button variant="outline" size="sm">
-                    <Download className="w-3 h-3 mr-1" />
-                    Download PDF
+                  <Select value={statusFilter} onValueChange={setStatusFilter}>
+                    <SelectTrigger className="w-full sm:w-40">
+                      <SelectValue placeholder="Status" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All Status</SelectItem>
+                      <SelectItem value="active">Active</SelectItem>
+                      <SelectItem value="trial">Trial</SelectItem>
+                      <SelectItem value="suspended">Suspended</SelectItem>
+                      <SelectItem value="inactive">Inactive</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <Select value={environmentFilter} onValueChange={setEnvironmentFilter}>
+                    <SelectTrigger className="w-full sm:w-40">
+                      <SelectValue placeholder="Environment" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All Environments</SelectItem>
+                      <SelectItem value="production">Production</SelectItem>
+                      <SelectItem value="test">Test</SelectItem>
+                      <SelectItem value="trial">Trial</SelectItem>
+                      <SelectItem value="onboarding">Onboarding</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleExportCSV}
+                    className="flex items-center gap-2"
+                  >
+                    <Download className="w-4 h-4" />
+                    Export
+                  </Button>
+                  <Button
+                    size="sm"
+                    onClick={() => setIsAddTenantOpen(true)}
+                    className="flex items-center gap-2 bg-[#0966CC] hover:bg-[#0C4A6E]"
+                  >
+                    <Plus className="w-4 h-4" />
+                    Add Tenant
                   </Button>
                 </div>
               </div>
+            </Card>
 
-              <div className="bg-[#f8fafc] p-4 rounded-lg">
-                <h4 className="text-sm text-[#0f172a] mb-2 flex items-center gap-2">
-                  <History className="w-4 h-4" />
-                  History
-                </h4>
-                <div className="space-y-2 text-xs">
-                  <div className="flex items-center gap-2 text-[#64748b]">
-                    <CheckCircle2 className="w-3 h-3 text-[#10B981]" />
-                    <span>Signed on {selectedBaaAgency.baaSignedDate}</span>
-                  </div>
-                  {selectedBaaAgency.baaRenewedDate && (
-                    <div className="flex items-center gap-2 text-[#64748b]">
-                      <CheckCircle2 className="w-3 h-3 text-[#10B981]" />
-                      <span>Renewed on {selectedBaaAgency.baaRenewedDate}</span>
+            {/* Tenants Table */}
+            <Card>
+              <div className="overflow-x-auto">
+                <table className="w-full">
+                  <thead className="bg-slate-50 border-b border-slate-200">
+                    <tr>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-slate-600 uppercase">Tenant</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-slate-600 uppercase">Status</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-slate-600 uppercase">Environment</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-slate-600 uppercase">BAA</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-slate-600 uppercase">Users</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-slate-600 uppercase">Patients</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-slate-600 uppercase">Charts</th>
+                      <th className="px-4 py-3 text-right text-xs font-medium text-slate-600 uppercase">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-200">
+                    {filteredTenants.length === 0 ? (
+                      <tr>
+                        <td colSpan={8} className="px-4 py-8 text-center text-slate-500">
+                          No tenants found
+                        </td>
+                      </tr>
+                    ) : (
+                      filteredTenants.map((tenant) => (
+                        <tr key={tenant.id} className="hover:bg-slate-50">
+                          <td className="px-4 py-4">
+                            <div>
+                              <p className="font-medium text-slate-900">{tenant.name}</p>
+                              <p className="text-sm text-slate-500">{tenant.subdomain}</p>
+                              <p className="text-xs text-slate-400">{tenant.contact_email}</p>
+                            </div>
+                          </td>
+                          <td className="px-4 py-4">
+                            {getStatusBadge(tenant.status)}
+                          </td>
+                          <td className="px-4 py-4">
+                            {getEnvironmentBadge(tenant.test_mode)}
+                          </td>
+                          <td className="px-4 py-4">
+                            {getBAABadge(tenant.baa_status || 'not_signed')}
+                          </td>
+                          <td className="px-4 py-4 text-slate-900">
+                            {tenant.user_count || 0}
+                          </td>
+                          <td className="px-4 py-4 text-slate-900">
+                            {tenant.patient_count || 0}
+                          </td>
+                          <td className="px-4 py-4 text-slate-900">
+                            {tenant.chart_count || 0}
+                          </td>
+                          <td className="px-4 py-4 text-right">
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button variant="ghost" size="sm">
+                                  <MoreVertical className="w-4 h-4" />
+                                </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end">
+                                <DropdownMenuItem onClick={() => handleViewBAA(tenant)}>
+                                  <Eye className="w-4 h-4 mr-2" />
+                                  View/Upload BAA
+                                </DropdownMenuItem>
+                                <DropdownMenuItem 
+                                  onClick={() => {
+                                    setSelectedTenant(tenant);
+                                    setTestMode(tenant.test_mode);
+                                    setIsFeatureFlagsOpen(true);
+                                  }}
+                                >
+                                  <Settings className="w-4 h-4 mr-2" />
+                                  Test Mode
+                                </DropdownMenuItem>
+                                <DropdownMenuItem 
+                                  onClick={() => {
+                                    setSelectedTenant(tenant);
+                                    setIsImpersonateOpen(true);
+                                  }}
+                                >
+                                  <Key className="w-4 h-4 mr-2" />
+                                  Impersonate
+                                </DropdownMenuItem>
+                                <DropdownMenuSeparator />
+                                {tenant.status === 'suspended' ? (
+                                  <DropdownMenuItem 
+                                    onClick={() => handleUnsuspend(tenant)}
+                                    className="text-green-600"
+                                  >
+                                    <PlayCircle className="w-4 h-4 mr-2" />
+                                    Reactivate
+                                  </DropdownMenuItem>
+                                ) : (
+                                  <DropdownMenuItem 
+                                    onClick={() => {
+                                      setSelectedTenant(tenant);
+                                      setIsSuspendDialogOpen(true);
+                                    }}
+                                    className="text-red-600"
+                                  >
+                                    <Ban className="w-4 h-4 mr-2" />
+                                    Suspend
+                                  </DropdownMenuItem>
+                                )}
+                                <DropdownMenuSeparator />
+                                <DropdownMenuItem 
+                                  onClick={() => {
+                                    setSelectedTenant(tenant);
+                                    setDeleteConfirmText('');
+                                    setIsDeleteDialogOpen(true);
+                                  }}
+                                  className="text-red-600"
+                                >
+                                  <X className="w-4 h-4 mr-2" />
+                                  Delete Permanently
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+          </div>
+        )}
+
+        {activeTab === 'audit' && (
+          <div className="space-y-6 max-w-7xl mx-auto">
+            <Card className="p-6">
+              <h3 className="text-lg font-semibold text-slate-900 mb-4 flex items-center gap-2">
+                <History className="w-5 h-5" />
+                Recent Audit Logs
+              </h3>
+              <div className="space-y-3">
+                {auditLogs.length === 0 ? (
+                  <p className="text-center text-slate-500 py-8">No audit logs found</p>
+                ) : (
+                  auditLogs.map((log) => (
+                    <div key={log.id} className="flex items-start gap-3 p-3 bg-slate-50 rounded-lg">
+                      <Activity className="w-4 h-4 text-slate-400 mt-1 shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-medium text-slate-900">{log.user_name}</span>
+                          <span className="text-slate-600">{log.action}</span>
+                          <Badge variant="outline" className="text-xs">
+                            {log.entity_type}
+                          </Badge>
+                          {log.tenant_name && (
+                            <Badge variant="outline" className="text-xs bg-blue-50">
+                              {log.tenant_name}
+                            </Badge>
+                          )}
+                        </div>
+                        <p className="text-sm text-slate-600 mt-1">
+                          {log.changes && typeof log.changes === 'object' ? JSON.stringify(log.changes) : ''}
+                          {log.metadata && typeof log.metadata === 'object' ? JSON.stringify(log.metadata) : ''}
+                        </p>
+                        <p className="text-xs text-slate-400 mt-1">
+                          {new Date(log.created_at).toLocaleString()}
+                        </p>
+                      </div>
                     </div>
-                  )}
+                  ))
+                )}
+              </div>
+            </Card>
+          </div>
+        )}
+
+        {activeTab === 'profile' && (
+          <div className="space-y-6 max-w-2xl mx-auto">
+            <Card className="p-6">
+              <h3 className="text-lg font-semibold text-slate-900 mb-4">Profile Information</h3>
+              <div className="space-y-4">
+                <div>
+                  <Label>Name</Label>
+                  <p className="mt-1 text-slate-900">{user?.first_name} {user?.last_name}</p>
+                </div>
+                <div>
+                  <Label>Email</Label>
+                  <p className="mt-1 text-slate-900">{user?.email}</p>
+                </div>
+                <div>
+                  <Label>Role</Label>
+                  <Badge className="mt-1 bg-purple-100 text-purple-800 border-purple-200">
+                    Super Admin
+                  </Badge>
                 </div>
               </div>
-            </div>
-          )}
+            </Card>
+          </div>
+        )}
+      </div>
 
+      {/* Dialogs Section - Add Tenant Dialog */}
+      <Dialog open={isAddTenantOpen} onOpenChange={setIsAddTenantOpen}>
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Add New Tenant</DialogTitle>
+            <DialogDescription>
+              Create a new tenant organization for the platform.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid grid-cols-2 gap-4 py-4">
+            <div className="col-span-2">
+              <Label htmlFor="name">Organization Name *</Label>
+              <Input
+                id="name"
+                value={formData.name}
+                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                placeholder="Acme Home Health"
+              />
+            </div>
+            <div>
+              <Label htmlFor="subdomain">Subdomain *</Label>
+              <Input
+                id="subdomain"
+                value={formData.subdomain}
+                onChange={(e) => setFormData({ ...formData, subdomain: e.target.value })}
+                placeholder="acme"
+              />
+              <p className="text-xs text-slate-500 mt-1">{formData.subdomain || 'subdomain'}.app</p>
+            </div>
+            <div>
+              <Label htmlFor="ein">EIN</Label>
+              <Input
+                id="ein"
+                value={formData.ein}
+                onChange={(e) => setFormData({ ...formData, ein: e.target.value })}
+                placeholder="12-3456789"
+              />
+            </div>
+            <div>
+              <Label htmlFor="email">Contact Email *</Label>
+              <Input
+                id="email"
+                type="email"
+                value={formData.contact_email}
+                onChange={(e) => setFormData({ ...formData, contact_email: e.target.value })}
+                placeholder="admin@acme.com"
+              />
+            </div>
+            <div>
+              <Label htmlFor="phone">Contact Phone</Label>
+              <Input
+                id="phone"
+                value={formData.contact_phone}
+                onChange={(e) => setFormData({ ...formData, contact_phone: e.target.value })}
+                placeholder="(555) 123-4567"
+              />
+            </div>
+            <div>
+              <Label htmlFor="environment">Environment</Label>
+              <Select 
+                value={formData.environment} 
+                onValueChange={(value: any) => setFormData({ ...formData, environment: value })}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="test">Test</SelectItem>
+                  <SelectItem value="production">Production</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setSelectedBaaAgency(null)}>
-              Close
+            <Button variant="outline" onClick={() => setIsAddTenantOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleAddTenant} className="bg-[#0966CC] hover:bg-[#0C4A6E]">
+              Create Tenant
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* Audit Log Modal */}
-      <Dialog open={isAuditLogOpen} onOpenChange={setIsAuditLogOpen}>
-        <DialogContent className="max-w-6xl max-h-[85vh] flex flex-col">
+      {/* BAA Dialog */}
+      <Dialog open={isBAADialogOpen} onOpenChange={setIsBAADialogOpen}>
+        <DialogContent className="sm:max-w-xl">
           <DialogHeader>
-            <DialogTitle>Audit Log</DialogTitle>
+            <DialogTitle>BAA Documents - {selectedTenant?.name}</DialogTitle>
             <DialogDescription>
-              View recent system activities and changes
+              View and manage Business Associate Agreement documents.
             </DialogDescription>
           </DialogHeader>
-
-          <div className="flex gap-2 mb-4">
-            <Input
-              placeholder="Search audit logs..."
-              className="flex-1 border-[#e2e8f0]"
-            />
-            <Button variant="outline" size="sm">
-              <Download className="w-4 h-4 mr-1" />
-              Export CSV
-            </Button>
-          </div>
-
-          <div className="border border-[#e2e8f0] rounded-lg overflow-hidden flex-1 min-h-0">
-            <div className="overflow-auto h-full">
-              <table className="w-full">
-                <thead className="bg-[#f8fafc] border-b border-[#e2e8f0] sticky top-0">
-                  <tr>
-                    <th className="text-left text-xs text-[#64748b] p-3 whitespace-nowrap">Timestamp</th>
-                    <th className="text-left text-xs text-[#64748b] p-3 whitespace-nowrap">Actor</th>
-                    <th className="text-left text-xs text-[#64748b] p-3 whitespace-nowrap">Action</th>
-                    <th className="text-left text-xs text-[#64748b] p-3 whitespace-nowrap">Entity</th>
-                    <th className="text-left text-xs text-[#64748b] p-3 whitespace-nowrap">Details</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[#e2e8f0]">
-                  {auditLogs.map((log) => (
-                    <tr key={log.id} className="hover:bg-[#f8fafc]">
-                      <td className="text-xs text-[#64748b] p-3 whitespace-nowrap">{log.timestamp}</td>
-                      <td className="text-xs text-[#0f172a] p-3 whitespace-nowrap">{log.actor}</td>
-                      <td className="text-xs p-3 whitespace-nowrap">
-                        <Badge className="bg-[#DBEAFE] text-[#1E40AF] border-[#93C5FD] text-xs">
-                          {log.action}
-                        </Badge>
-                      </td>
-                      <td className="text-xs text-[#0f172a] p-3 whitespace-nowrap">{log.entity}</td>
-                      <td className="text-xs text-[#64748b] p-3">{log.details}</td>
-                    </tr>
+          <div className="space-y-4 py-4">
+            {baaDocuments.length > 0 && (
+              <div>
+                <Label className="mb-2 block">Existing BAA Documents</Label>
+                <div className="space-y-2">
+                  {baaDocuments.map((doc) => (
+                    <div key={doc.id} className="p-3 border rounded-lg flex items-center justify-between">
+                      <div>
+                        <p className="font-medium text-sm">Signed by {doc.signed_by}</p>
+                        <p className="text-xs text-slate-500">
+                          Signed: {new Date(doc.signed_at).toLocaleDateString()}
+                        </p>
+                        <p className="text-xs text-slate-500">
+                          Expires: {new Date(doc.expires_at).toLocaleDateString()}
+                        </p>
+                      </div>
+                      <Badge className={doc.status === 'active' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}>
+                        {doc.status}
+                      </Badge>
+                    </div>
                   ))}
-                </tbody>
-              </table>
+                </div>
+              </div>
+            )}
+            
+            <Separator />
+            
+            <div>
+              <Label className="mb-2 block">Upload New BAA</Label>
+              <div className="space-y-3">
+                <div>
+                  <Label htmlFor="baa-file">BAA Document (PDF) *</Label>
+                  <Input
+                    id="baa-file"
+                    type="file"
+                    accept=".pdf"
+                    onChange={(e) => setBAAFile(e.target.files?.[0] || null)}
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="signed-by">Signed By *</Label>
+                  <Input
+                    id="signed-by"
+                    value={baaSignedBy}
+                    onChange={(e) => setBAASignedBy(e.target.value)}
+                    placeholder="John Doe, CEO"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="expires-at">Expiration Date *</Label>
+                  <Input
+                    id="expires-at"
+                    type="date"
+                    value={baaExpiresAt}
+                    onChange={(e) => setBAAExpiresAt(e.target.value)}
+                  />
+                </div>
+              </div>
             </div>
           </div>
-
-          <p className="text-xs text-[#64748b] text-center mt-4">
-            Showing recent 20 entries • Total: 1,247 entries
-          </p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsBAADialogOpen(false)}>
+              Close
+            </Button>
+            <Button onClick={handleUploadBAA} className="bg-[#0966CC] hover:bg-[#0C4A6E]">
+              <Upload className="w-4 h-4 mr-2" />
+              Upload BAA
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* Impersonation Dialog */}
+      {/* Test Mode Dialog */}
+      <Dialog open={isFeatureFlagsOpen} onOpenChange={setIsFeatureFlagsOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Test Mode - {selectedTenant?.name}</DialogTitle>
+            <DialogDescription>
+              Enable test mode for this tenant. Test mode tenants have restricted access.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-4">
+            <div className="flex items-center space-x-2">
+              <Switch
+                id="test-mode"
+                checked={testMode}
+                onCheckedChange={setTestMode}
+              />
+              <label
+                htmlFor="test-mode"
+                className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+              >
+                Enable Test Mode
+              </label>
+            </div>
+            <p className="text-sm text-slate-500 mt-2">
+              Test mode prevents this tenant from accessing production features and data.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsFeatureFlagsOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleUpdateTestMode} className="bg-[#0966CC] hover:bg-[#0C4A6E]">
+              Update
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Suspend Dialog */}
+      <Dialog open={isSuspendDialogOpen} onOpenChange={setIsSuspendDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Suspend Tenant</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to suspend {selectedTenant?.name}? This will prevent all users from accessing the system.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-4">
+            <Label htmlFor="suspend-reason">Reason for Suspension *</Label>
+            <Textarea
+              id="suspend-reason"
+              value={suspendReason}
+              onChange={(e) => setSuspendReason(e.target.value)}
+              placeholder="Payment failure, policy violation, etc."
+              rows={3}
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsSuspendDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleSuspend} className="bg-red-600 hover:bg-red-700">
+              Suspend Tenant
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Impersonate Dialog */}
       <Dialog open={isImpersonateOpen} onOpenChange={setIsImpersonateOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle className="flex items-center gap-2 text-[#F59E0B]">
-              <AlertTriangle className="w-5 h-5" />
-              Impersonate Agency
-            </DialogTitle>
+            <DialogTitle>Impersonate Tenant</DialogTitle>
             <DialogDescription>
-              You are about to impersonate {impersonateAgency?.name}. This action will be logged.
+              This action will be logged in the audit trail. Provide a reason for this support action.
             </DialogDescription>
           </DialogHeader>
-
-          <div className="space-y-4 py-4">
-            <div className="bg-[#FEF3C7] border border-[#FDE68A] rounded-lg p-4">
-              <p className="text-sm text-[#92400E]">
-                <strong>Important:</strong> While impersonating, all actions will be tagged in the audit log.
-                Session will automatically end after 15 minutes.
-              </p>
-            </div>
-
-            <div>
-              <Label className="text-sm text-[#64748b] mb-2 block">
-                Reason for Impersonation *
-              </Label>
-              <Textarea
-                placeholder="e.g., Support request #1234, investigating reported issue..."
-                value={impersonateReason}
-                onChange={(e) => setImpersonateReason(e.target.value)}
-                className="border-[#e2e8f0] min-h-[100px]"
-              />
-            </div>
+          <div className="py-4">
+            <Label htmlFor="impersonate-reason">Reason for Impersonation *</Label>
+            <Textarea
+              id="impersonate-reason"
+              value={impersonateReason}
+              onChange={(e) => setImpersonateReason(e.target.value)}
+              placeholder="Support ticket #12345, investigating bug, etc."
+              rows={3}
+            />
           </div>
-
           <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => {
-                setIsImpersonateOpen(false);
-                setImpersonateReason('');
-              }}
-            >
+            <Button variant="outline" onClick={() => setIsImpersonateOpen(false)}>
               Cancel
             </Button>
-            <Button
-              onClick={handleImpersonate}
-              className="bg-[#F59E0B] hover:bg-[#D97706] text-white"
-            >
-              <Eye className="w-4 h-4 mr-2" />
+            <Button onClick={handleImpersonate} className="bg-[#0966CC] hover:bg-[#0C4A6E]">
               Start Impersonation
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* Suspend/Unsuspend Dialog */}
-      <Dialog open={isSuspendDialogOpen} onOpenChange={setIsSuspendDialogOpen}>
+      {/* Delete Tenant Dialog */}
+      <Dialog open={isDeleteDialogOpen} onOpenChange={setIsDeleteDialogOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle className="flex items-center gap-2 text-[#DC2626]">
-              <AlertTriangle className="w-5 h-5" />
-              {suspendAgency?.status === 'Suspended' ? 'Unsuspend' : 'Suspend'} Agency
-            </DialogTitle>
+            <DialogTitle className="text-red-600">Delete Tenant Permanently</DialogTitle>
             <DialogDescription>
-              {suspendAgency?.status === 'Suspended' 
-                ? `Restore access for ${suspendAgency?.name}`
-                : `Temporarily restrict access for ${suspendAgency?.name}`
-              }
+              This action CANNOT be undone. This will permanently delete {selectedTenant?.name} and ALL associated data including:
+              <ul className="list-disc list-inside mt-2 space-y-1">
+                <li>All users</li>
+                <li>All patients</li>
+                <li>All charts and medications</li>
+                <li>All documents and exports</li>
+                <li>All audit logs</li>
+              </ul>
             </DialogDescription>
           </DialogHeader>
-
-          <div className="space-y-4 py-4">
-            <div className="bg-[#FEE2E2] border border-[#FECACA] rounded-lg p-4">
-              <p className="text-sm text-[#7F1D1D]">
-                {suspendAgency?.status === 'Suspended' 
-                  ? 'This will restore full access to the agency and all its users.'
-                  : 'This will immediately lock all agency users out and mark all data as read-only.'
-                }
-              </p>
-            </div>
-
-            <div>
-              <Label className="text-sm text-[#64748b] mb-2 block">
-                Reason *
-              </Label>
-              <Textarea
-                placeholder="e.g., Payment failure, security concern, user request..."
-                value={suspendReason}
-                onChange={(e) => setSuspendReason(e.target.value)}
-                className="border-[#e2e8f0] min-h-[100px]"
-              />
-            </div>
+          <div className="py-4">
+            <Label htmlFor="delete-confirm">Type tenant name to confirm: <span className="font-bold">{selectedTenant?.name}</span></Label>
+            <Input
+              id="delete-confirm"
+              value={deleteConfirmText}
+              onChange={(e) => setDeleteConfirmText(e.target.value)}
+              placeholder={selectedTenant?.name}
+              className="mt-2"
+            />
           </div>
-
           <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => {
-                setIsSuspendDialogOpen(false);
-                setSuspendReason('');
-              }}
-            >
+            <Button variant="outline" onClick={() => {
+              setIsDeleteDialogOpen(false);
+              setDeleteConfirmText('');
+            }}>
               Cancel
             </Button>
-            <Button
-              onClick={handleSuspend}
-              className={suspendAgency?.status === 'Suspended' 
-                ? 'bg-[#10B981] hover:bg-[#059669] text-white'
-                : 'bg-[#DC2626] hover:bg-[#B91C1C] text-white'
-              }
+            <Button 
+              onClick={handleDelete} 
+              className="bg-red-600 hover:bg-red-700"
+              disabled={deleteConfirmText !== selectedTenant?.name}
             >
-              {suspendAgency?.status === 'Suspended' ? (
-                <>
-                  <PlayCircle className="w-4 h-4 mr-2" />
-                  Unsuspend Agency
-                </>
-              ) : (
-                <>
-                  <Ban className="w-4 h-4 mr-2" />
-                  Suspend Agency
-                </>
-              )}
+              Delete Permanently
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* Feature Flags Dialog */}
-      <Dialog open={isFeatureFlagsOpen} onOpenChange={setIsFeatureFlagsOpen}>
-        <DialogContent className="max-w-2xl">
+      {/* Activation Dialog */}
+      <Dialog open={isActivationDialogOpen} onOpenChange={setIsActivationDialogOpen}>
+        <DialogContent className="sm:max-w-[600px]">
           <DialogHeader>
-            <DialogTitle>Feature Flags</DialogTitle>
+            <DialogTitle className="text-green-600">Tenant Activated Successfully!</DialogTitle>
             <DialogDescription>
-              Manage feature rollouts for {featureFlagsAgency?.name}
+              The BAA has been uploaded and the tenant is now active. Share the following activation details with the tenant administrator.
             </DialogDescription>
           </DialogHeader>
-
-          <div className="space-y-4 py-4">
-            <div className="bg-[#f8fafc] p-4 rounded-lg">
-              <p className="text-xs text-[#64748b] mb-3">
-                Enable or disable specific features for staged rollouts and testing
-              </p>
+          <div className="py-4 space-y-4">
+            <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+              <h3 className="font-semibold text-green-900 mb-2">📧 Email Activation Details To:</h3>
+              <p className="text-green-800">{activationInfo?.contactEmail}</p>
             </div>
 
             <div className="space-y-3">
-              {['New OCR', 'Background sync v2', 'Biometric login'].map((flag) => (
-                <div key={flag} className="flex items-center justify-between p-4 border border-[#e2e8f0] rounded-lg">
-                  <div>
-                    <p className="text-sm text-[#0f172a] mb-1">{flag}</p>
-                    <p className="text-xs text-[#64748b]">
-                      {flag === 'New OCR' && 'Enhanced OCR with LLM integration'}
-                      {flag === 'Background sync v2' && 'Improved background sync performance'}
-                      {flag === 'Biometric login' && 'Face ID / Fingerprint authentication'}
-                    </p>
-                  </div>
-                  <Switch
-                    checked={featureFlagsAgency?.featureFlags?.includes(flag)}
-                    onCheckedChange={(checked) => {
-                      toast.success(checked ? `${flag} enabled` : `${flag} disabled`);
-                    }}
-                  />
-                </div>
-              ))}
-
-              {/* Delivery Options with Sub-options */}
-              <div className="border border-[#e2e8f0] rounded-lg p-4">
-                <div className="flex items-center justify-between mb-3">
-                  <div>
-                    <p className="text-sm text-[#0f172a] mb-1">Delivery options</p>
-                    <p className="text-xs text-[#64748b]">Configure available chart delivery methods</p>
-                  </div>
-                  <Switch
-                    checked={featureFlagsAgency?.featureFlags?.includes('Delivery options')}
-                    onCheckedChange={(checked) => {
-                      toast.success(checked ? 'Delivery options enabled' : 'Delivery options disabled');
-                    }}
-                  />
-                </div>
-                
-                {/* Sub-options for Delivery */}
-                <div className="ml-4 space-y-2 pt-3 border-t border-[#e2e8f0]">
-                  {['PDF', 'Print', 'Fax', 'Send via Email'].map((option) => (
-                    <div key={option} className="flex items-center justify-between">
-                      <Label className="text-sm text-[#64748b]">{option}</Label>
-                      <Checkbox
-                        defaultChecked={option === 'PDF' || option === 'Print'}
-                        onCheckedChange={(checked) => {
-                          toast.success(`${option} ${checked ? 'enabled' : 'disabled'}`);
-                        }}
-                      />
-                    </div>
-                  ))}
+              <div>
+                <Label className="text-sm font-semibold text-slate-700">Organization Name</Label>
+                <div className="mt-1 p-3 bg-slate-50 rounded-lg border">
+                  <p className="text-slate-900">{activationInfo?.tenantName}</p>
                 </div>
               </div>
+
+              <div>
+                <Label className="text-sm font-semibold text-slate-700">Subdomain</Label>
+                <div className="mt-1 p-3 bg-slate-50 rounded-lg border">
+                  <p className="text-slate-900 font-mono">{activationInfo?.subdomain}</p>
+                </div>
+              </div>
+
+              <div>
+                <Label className="text-sm font-semibold text-slate-700">Activation Code</Label>
+                <div className="mt-1 p-3 bg-slate-50 rounded-lg border flex items-center justify-between">
+                  <p className="text-slate-900 font-mono text-lg font-bold">{activationInfo?.activationCode}</p>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      navigator.clipboard.writeText(activationInfo?.activationCode || '');
+                      toast.success('Code copied to clipboard');
+                    }}
+                  >
+                    Copy
+                  </Button>
+                </div>
+              </div>
+
+              <div>
+                <Label className="text-sm font-semibold text-slate-700">Activation Link</Label>
+                <div className="mt-1 p-3 bg-slate-50 rounded-lg border">
+                  <p className="text-slate-900 font-mono text-sm break-all">{activationInfo?.activationLink}</p>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="mt-2 w-full"
+                  onClick={() => {
+                    navigator.clipboard.writeText(activationInfo?.activationLink || '');
+                    toast.success('Link copied to clipboard');
+                  }}
+                >
+                  Copy Link
+                </Button>
+              </div>
+            </div>
+
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+              <p className="text-sm text-blue-900">
+                <strong>Next Steps:</strong> Send this activation link and code to the tenant administrator. 
+                They will use it to create their admin account and access the system.
+              </p>
             </div>
           </div>
-
           <DialogFooter>
-            <Button variant="outline" onClick={() => setIsFeatureFlagsOpen(false)}>
-              Close
+            <Button onClick={() => setIsActivationDialogOpen(false)} className="bg-[#0966CC] hover:bg-[#0C4A6E]">
+              Done
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Mobile Drawer */}
+      <Sheet open={isDrawerOpen} onOpenChange={setIsDrawerOpen}>
+        <SheetContent side="left" className="w-64">
+          <SheetHeader>
+            <SheetTitle>Super Admin</SheetTitle>
+          </SheetHeader>
+          <div className="mt-6 space-y-2">
+            <button
+              onClick={() => { setActiveTab('tenants'); setIsDrawerOpen(false); }}
+              className="w-full text-left px-4 py-2 rounded-lg hover:bg-slate-100"
+            >
+              <Building2 className="w-4 h-4 inline mr-2" />
+              Tenants
+            </button>
+            <button
+              onClick={() => { setActiveTab('audit'); setIsDrawerOpen(false); }}
+              className="w-full text-left px-4 py-2 rounded-lg hover:bg-slate-100"
+            >
+              <History className="w-4 h-4 inline mr-2" />
+              Audit Logs
+            </button>
+            <button
+              onClick={() => { setActiveTab('profile'); setIsDrawerOpen(false); }}
+              className="w-full text-left px-4 py-2 rounded-lg hover:bg-slate-100"
+            >
+              <User className="w-4 h-4 inline mr-2" />
+              Profile
+            </button>
+          </div>
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Calendar as CalendarIcon,
   Users,
@@ -23,6 +23,7 @@ import {
   Star,
   AlertCircle,
   TrendingUp,
+  Loader2,
   Shield,
   Mail,
   Phone,
@@ -65,6 +66,21 @@ import { toast } from 'sonner';
 import { Toaster } from '../../components/ui/sonner';
 import SchedulerProfile from './SchedulerProfile';
 import SchedulerSettings from './SchedulerSettings';
+import DocumentLibrary from './DocumentLibrary';
+import DocumentScanner from './DocumentScanner';
+import {
+  fetchAllCharts,
+  fetchUnassignedCharts,
+  fetchClinicians,
+  createPatientWithChart,
+  assignChart,
+  reassignChart,
+  getDashboardStats,
+  ChartWithPatient,
+  Clinician as ClinicianType,
+} from '../../services/schedulerService';
+import { getDocumentStats } from '../../services/documentService';
+import { transformChartsForUI, UIChart } from '../../utils/chartTransformers';
 
 interface Props {
   navigation: {
@@ -73,146 +89,85 @@ interface Props {
   };
 }
 
-type TabType = 'charts' | 'scan' | 'assign' | 'profile' | 'settings';
-
-interface Chart {
-  id: string;
-  patientId: string;
-  patientName: string;
-  patientDob: string;
-  status: 'Needs Assignment' | 'Assigned' | 'Docs Available' | 'Completed';
-  createdDate: string;
-  assignedTo?: string;
-  documentCount: number;
-  isNew?: boolean;
-  waitingDays?: number;
-}
-
-interface Patient {
-  id: string;
-  name: string;
-  dob: string;
-  address: string;
-  phone: string;
-}
-
-interface Clinician {
-  id: string;
-  name: string;
-  assignedCharts: number;
-}
-
-const mockCharts: Chart[] = [
-  {
-    id: 'c1',
-    patientId: 'PT-1001',
-    patientName: 'Jane Test',
-    patientDob: '1969-12-31',
-    status: 'Assigned',
-    createdDate: '2025-01-15',
-    assignedTo: 'Anna Clinician',
-    documentCount: 2,
-    isNew: false,
-    waitingDays: 0,
-  },
-  {
-    id: 'c2',
-    patientId: 'PT-1002',
-    patientName: 'John Sample',
-    patientDob: '1972-02-01',
-    status: 'Needs Assignment',
-    createdDate: '2025-11-03',
-    documentCount: 0,
-    isNew: true,
-    waitingDays: 2,
-  },
-  {
-    id: 'c3',
-    patientId: 'PT-1003',
-    patientName: 'Mary Johnson',
-    patientDob: '1985-05-12',
-    status: 'Docs Available',
-    createdDate: '2025-11-04',
-    documentCount: 3,
-    isNew: false,
-    waitingDays: 1,
-  },
-  {
-    id: 'c4',
-    patientId: 'PT-1004',
-    patientName: 'Robert Williams',
-    patientDob: '1978-09-20',
-    status: 'Completed',
-    createdDate: '2025-10-28',
-    assignedTo: 'Bob Clinician',
-    documentCount: 4,
-    isNew: false,
-    waitingDays: 0,
-  },
-  {
-    id: 'c5',
-    patientId: 'PT-1005',
-    patientName: 'Lisa Anderson',
-    patientDob: '1992-03-15',
-    status: 'Needs Assignment',
-    createdDate: '2025-11-02',
-    documentCount: 2,
-    isNew: false,
-    waitingDays: 3,
-  },
-];
-
-const mockPatients: Patient[] = [
-  { id: '1', name: 'Jane Test', dob: '1969-12-31', address: '101 Test Ave, Test City, CA', phone: '555-1001' },
-  { id: '2', name: 'John Sample', dob: '1972-02-01', address: '202 Sample St, Sample Town, CA', phone: '555-1002' },
-];
-
-const mockClinicians: Clinician[] = [
-  { id: '1', name: 'Anna Clinician', assignedCharts: 5 },
-  { id: '2', name: 'Bob Clinician', assignedCharts: 3 },
-  { id: '3', name: 'Carol Clinician', assignedCharts: 7 },
-];
+type TabType = 'charts' | 'scan' | 'assign' | 'profile' | 'settings' | 'documents';
 
 export default function SchedulerDashboard({ navigation }: Props) {
-  const { logout } = useAuth();
+  const { user, logout } = useAuth();
+  
+  // UI State
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<TabType>('charts');
   const [searchQuery, setSearchQuery] = useState('');
   const [chartFilter, setChartFilter] = useState<'all' | 'needs-assignment' | 'assigned' | 'completed'>('all');
+  
+  // Data State
+  const [charts, setCharts] = useState<UIChart[]>([]);
+  const [clinicians, setClinicians] = useState<ClinicianType[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [stats, setStats] = useState({
+    totalPatients: 0,
+    totalCharts: 0,
+    unassignedCharts: 0,
+    chartsWithDocuments: 0,
+    newDocsToday: 0,
+  });
+  
+  // Modal State
   const [isCreateChartModalOpen, setIsCreateChartModalOpen] = useState(false);
   const [isAssignModalOpen, setIsAssignModalOpen] = useState(false);
-  const [selectedPatient, setSelectedPatient] = useState('');
-  const [selectedChart, setSelectedChart] = useState<Chart | null>(null);
+  const [isScanModalOpen, setIsScanModalOpen] = useState(false);
+  const [isPatientSelectionOpen, setIsPatientSelectionOpen] = useState(false);
+  const [selectedChart, setSelectedChart] = useState<UIChart | null>(null);
   const [selectedClinician, setSelectedClinician] = useState('');
+  const [creating, setCreating] = useState(false);
+  const [uploadMethod, setUploadMethod] = useState<'camera' | 'file' | null>(null);
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  const [uploading, setUploading] = useState(false);
+  
+  // Form State
   const [newChart, setNewChart] = useState({
-    patientName: '',
-    patientDob: '',
-    patientAddress: '',
-    patientPhone: '',
+    first_name: '',
+    last_name: '',
+    date_of_birth: '',
+    address_line1: '',
+    phone: '',
   });
 
-  // Settings states
-  const [chartNotifications, setChartNotifications] = useState(true);
-  const [assignmentAlerts, setAssignmentAlerts] = useState(true);
-  const [isChangePasswordDialogOpen, setIsChangePasswordDialogOpen] = useState(false);
-  const [currentPassword, setCurrentPassword] = useState('');
-  const [newPassword, setNewPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
-  const [showCurrentPassword, setShowCurrentPassword] = useState(false);
-  const [showNewPassword, setShowNewPassword] = useState(false);
-  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  // Load data on mount and when tenant changes
+  useEffect(() => {
+    if (user?.tenant_id) {
+      loadData();
+    }
+  }, [user?.tenant_id]);
 
-  // Calculate stats
-  const totalPatients = mockPatients.length;
-  const totalCharts = mockCharts.length;
-  const chartsNeedingAssignment = mockCharts.filter(c => c.status === 'Needs Assignment' || c.status === 'Docs Available').length;
-  const newDocsToday = mockCharts.filter(c => {
-    const today = new Date('2025-11-05');
-    const createdDate = new Date(c.createdDate);
-    return createdDate.toDateString() === today.toDateString();
-  }).length;
-  const avgAssignmentTime = 1.2; // Mock value in hours
-  const unassignedCharts = mockCharts.filter(c => !c.assignedTo).length;
+  const loadData = async () => {
+    if (!user?.tenant_id) return;
+    
+    try {
+      setLoading(true);
+      const [chartsData, cliniciansData, statsData] = await Promise.all([
+        fetchAllCharts(user.tenant_id),
+        fetchClinicians(user.tenant_id),
+        getDashboardStats(user.tenant_id),
+      ]);
+      
+      console.log('Dashboard data loaded:', {
+        charts: chartsData?.length,
+        clinicians: cliniciansData?.length,
+        cliniciansData,
+      });
+      
+      // Transform charts to UI format
+      setCharts(transformChartsForUI(chartsData));
+      setClinicians(cliniciansData);
+      setStats(statsData);
+    } catch (error) {
+      console.error('Error loading dashboard data:', error);
+      toast.error('Failed to load dashboard data');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const handleLogout = () => {
     logout();
@@ -224,27 +179,161 @@ export default function SchedulerDashboard({ navigation }: Props) {
     setIsDrawerOpen(false);
   };
 
-  const handleCreateChart = () => {
-    if (!newChart.patientName || !newChart.patientDob) {
-      alert('Please fill in patient name and date of birth');
+  const handleCreateChart = async () => {
+    if (!newChart.first_name || !newChart.last_name || !newChart.date_of_birth) {
+      toast.error('Please fill in required fields (First Name, Last Name, Date of Birth)');
       return;
     }
-    console.log('Creating empty chart:', newChart);
-    alert('Empty chart created successfully!');
-    setIsCreateChartModalOpen(false);
-    setNewChart({ patientName: '', patientDob: '', patientAddress: '', patientPhone: '' });
+
+    if (!user?.tenant_id || !user?.id) {
+      toast.error('User information not available');
+      return;
+    }
+
+    try {
+      setCreating(true);
+      const result = await createPatientWithChart(newChart, user.tenant_id, user.id);
+      toast.success(`Chart created for ${result.patient.first_name} ${result.patient.last_name}`);
+      setIsCreateChartModalOpen(false);
+      setNewChart({
+        first_name: '',
+        last_name: '',
+        date_of_birth: '',
+        address_line1: '',
+        phone: '',
+      });
+      loadData(); // Reload data to show new chart
+    } catch (error: any) {
+      console.error('Error creating chart:', error);
+      toast.error(error.message || 'Failed to create chart');
+    } finally {
+      setCreating(false);
+    }
   };
 
-  const handleAssignChart = () => {
+  const handleAssignChart = async () => {
     if (!selectedClinician) {
-      alert('Please select a clinician');
+      toast.error('Please select a clinician');
       return;
     }
-    console.log('Assigning chart', selectedChart?.id, 'to', selectedClinician);
-    alert(`Chart assigned to ${selectedClinician}!`);
-    setIsAssignModalOpen(false);
-    setSelectedChart(null);
-    setSelectedClinician('');
+
+    if (!selectedChart) {
+      toast.error('No chart selected');
+      return;
+    }
+
+    try {
+      await assignChart(selectedChart.id, selectedClinician);
+      const clinician = clinicians.find(c => c.id === selectedClinician);
+      toast.success(`Chart assigned to ${clinician?.first_name} ${clinician?.last_name}!`);
+      setIsAssignModalOpen(false);
+      setSelectedChart(null);
+      setSelectedClinician('');
+      loadData(); // Reload data to reflect assignment
+    } catch (error: any) {
+      console.error('Error assigning chart:', error);
+      toast.error(error.message || 'Failed to assign chart');
+    }
+  };
+
+  const handleReassignChart = async (chartId: string, newClinicianId: string) => {
+    try {
+      await reassignChart(chartId, newClinicianId);
+      const clinician = clinicians.find(c => c.id === newClinicianId);
+      toast.success(`Chart reassigned to ${clinician?.first_name} ${clinician?.last_name}!`);
+      loadData(); // Reload data to reflect reassignment
+    } catch (error: any) {
+      console.error('Error reassigning chart:', error);
+      toast.error(error.message || 'Failed to reassign chart');
+    }
+  };
+
+  // Helper function to map database status to display status
+  const mapChartStatus = (dbStatus: string): string => {
+    switch (dbStatus) {
+      case 'needs_assignment':
+        return 'Needs Assignment';
+      case 'assigned':
+        return 'Assigned';
+      case 'active':
+        return 'Docs Available';
+      case 'verified_ready':
+      case 'delivered_locked':
+        return 'Completed';
+      default:
+        return 'Needs Assignment';
+    }
+  };
+
+  // Helper function to check if a chart was created recently (within 24 hours)
+  const isChartNew = (createdDate: string): boolean => {
+    const created = new Date(createdDate);
+    const now = new Date();
+    const hoursDiff = (now.getTime() - created.getTime()) / (1000 * 60 * 60);
+    return hoursDiff < 24;
+  };
+
+  // Helper function to calculate waiting days
+  const getWaitingDays = (createdDate: string, assignedTo?: string): number => {
+    if (assignedTo) return 0; // Not waiting if assigned
+    const created = new Date(createdDate);
+    const now = new Date();
+    const daysDiff = Math.floor((now.getTime() - created.getTime()) / (1000 * 60 * 60 * 24));
+    return daysDiff;
+  };
+
+  // Quick action handlers
+  const handleQuickCameraScan = () => {
+    setUploadMethod('camera');
+    setIsPatientSelectionOpen(true);
+  };
+
+  const handleQuickFileImport = () => {
+    // Trigger file input
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*,.pdf';
+    input.multiple = true;
+    input.onchange = (e: any) => {
+      const files = Array.from(e.target.files || []) as File[];
+      if (files.length > 0) {
+        setPendingFiles(files);
+        setUploadMethod('file');
+        setIsPatientSelectionOpen(true);
+      }
+    };
+    input.click();
+  };
+
+  const handlePatientSelected = async (chartId: string) => {
+    if (!user?.id || !user?.tenant_id) return;
+
+    setUploading(true);
+    try {
+      const { uploadDocument } = await import('../../services/documentService');
+      
+      if (uploadMethod === 'file' && pendingFiles.length > 0) {
+        // Upload files to the selected chart
+        await Promise.all(
+          pendingFiles.map(file => uploadDocument(file, chartId, user.tenant_id, user.id))
+        );
+        toast.success(`${pendingFiles.length} file(s) uploaded successfully`);
+      } else if (uploadMethod === 'camera') {
+        // For camera, we'll open the camera after patient selection
+        toast.info('Camera functionality will open after patient selection');
+        // You can implement camera capture here
+      }
+      
+      setIsPatientSelectionOpen(false);
+      setPendingFiles([]);
+      setUploadMethod(null);
+      loadData(); // Refresh data
+    } catch (error: any) {
+      console.error('Error uploading documents:', error);
+      toast.error(error.message || 'Failed to upload documents');
+    } finally {
+      setUploading(false);
+    }
   };
 
   // Sidebar Navigation Component
@@ -271,6 +360,17 @@ export default function SchedulerDashboard({ navigation }: Props) {
       >
         <Camera className="w-5 h-5" />
         <span>Scan Documents</span>
+      </button>
+      <button
+        onClick={() => handleTabChange('documents')}
+        className={`w-full flex items-center gap-3 px-3 py-3 rounded-lg transition-colors ${
+          activeTab === 'documents'
+            ? 'bg-[#FEF3C7] text-[#F59E0B]'
+            : 'text-[#64748b] hover:bg-[#f8fafc]'
+        }`}
+      >
+        <FileText className="w-5 h-5" />
+        <span>Document Library</span>
       </button>
       <button
         onClick={() => handleTabChange('assign')}
@@ -310,7 +410,7 @@ export default function SchedulerDashboard({ navigation }: Props) {
 
   // Patient Charts Tab
   const renderChartsTab = () => {
-    const filteredCharts = mockCharts
+    const filteredCharts = charts
       .filter(chart => {
         // Filter by search query
         const matchesSearch = chart.patientName.toLowerCase().includes(searchQuery.toLowerCase());
@@ -334,13 +434,31 @@ export default function SchedulerDashboard({ navigation }: Props) {
             <h2 className="text-xl text-[#0f172a]">Patient Charts</h2>
             <p className="text-sm text-[#64748b]">Create charts and manage patient records</p>
           </div>
-          <Button
-            onClick={() => setIsCreateChartModalOpen(true)}
-            className="bg-[#F59E0B] hover:bg-[#D97706] text-white"
-          >
-            <Plus className="w-4 h-4 mr-2" />
-            Create New Chart
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              onClick={() => setIsCreateChartModalOpen(true)}
+              className="bg-[#F59E0B] hover:bg-[#D97706] text-white"
+            >
+              <Plus className="w-4 h-4 mr-2" />
+              Create New Chart
+            </Button>
+            <Button
+              onClick={handleQuickCameraScan}
+              variant="outline"
+              className="border-[#e2e8f0] text-[#64748b] hover:bg-[#f8fafc]"
+            >
+              <Camera className="w-4 h-4 mr-2" />
+              Camera Scan
+            </Button>
+            <Button
+              onClick={handleQuickFileImport}
+              variant="outline"
+              className="border-[#e2e8f0] text-[#64748b] hover:bg-[#f8fafc]"
+            >
+              <Download className="w-4 h-4 mr-2" />
+              Import File
+            </Button>
+          </div>
         </div>
 
         {/* Search */}
@@ -399,7 +517,7 @@ export default function SchedulerDashboard({ navigation }: Props) {
         {filteredCharts.length > 0 ? (
           <div className="space-y-3">
             {filteredCharts.map((chart) => {
-              const getStatusBadgeStyle = (status: Chart['status']) => {
+              const getStatusBadgeStyle = (status: UIChart['status']) => {
                 switch (status) {
                   case 'Needs Assignment':
                     return 'bg-[#FEF3C7] text-[#F59E0B] border-[#FDE68A]';
@@ -436,13 +554,13 @@ export default function SchedulerDashboard({ navigation }: Props) {
                             New
                           </Badge>
                         )}
-                        {chart.documentCount > 0 && chart.status !== 'Completed' && (
+                        {(chart.documentCount > 0 && chart.status !== 'Completed') && (
                           <Badge variant="outline" className="border-[#E0E7FF] text-[#4F46E5] bg-[#F5F3FF]">
                             <FileText className="w-3 h-3 mr-1" />
                             {chart.documentCount} Doc{chart.documentCount !== 1 ? 's' : ''} Pending
                           </Badge>
                         )}
-                        {chart.waitingDays && chart.waitingDays > 0 && (
+                        {(chart.waitingDays > 0) && (
                           <Badge variant="outline" className="border-[#FDE68A] text-[#D97706] bg-[#FFFBEB]">
                             <Clock className="w-3 h-3 mr-1" />
                             Waiting {chart.waitingDays}d
@@ -483,24 +601,21 @@ export default function SchedulerDashboard({ navigation }: Props) {
                             <PopoverContent className="w-64 p-3">
                               <div className="space-y-2">
                                 <p className="text-sm text-[#64748b] mb-2">Reassign to:</p>
-                                {mockClinicians.map((clinician) => (
+                                {clinicians.map((clinician) => (
                                   <button
                                     key={clinician.id}
-                                    onClick={() => {
-                                      console.log(`Reassigning chart ${chart.id} to ${clinician.name}`);
-                                      alert(`Chart reassigned to ${clinician.name}!`);
-                                    }}
+                                    onClick={() => handleReassignChart(chart.id, clinician.id)}
                                     className="w-full text-left px-3 py-2 rounded-lg hover:bg-[#f8fafc] transition-colors text-sm"
                                   >
                                     <div className="flex items-center gap-2">
                                       <Avatar className="w-6 h-6">
                                         <AvatarFallback className="bg-gradient-to-br from-[#E0F2FE] to-[#BFDBFE] text-[#0966CC] text-xs">
-                                          {clinician.name.split(' ').map(n => n[0]).join('')}
+                                          {clinician.first_name[0]}{clinician.last_name[0]}
                                         </AvatarFallback>
                                       </Avatar>
                                       <div>
-                                        <p className="text-[#0f172a]">{clinician.name}</p>
-                                        <p className="text-xs text-[#64748b]">{clinician.assignedCharts} charts</p>
+                                        <p className="text-[#0f172a]">{clinician.first_name} {clinician.last_name}</p>
+                                        <p className="text-xs text-[#64748b]">{clinician.active_chart_count} charts</p>
                                       </div>
                                     </div>
                                   </button>
@@ -546,24 +661,30 @@ export default function SchedulerDashboard({ navigation }: Props) {
                         <PopoverContent className="w-64 p-3">
                           <div className="space-y-2">
                             <p className="text-sm text-[#64748b] mb-2">Select clinician:</p>
-                            {mockClinicians.map((clinician) => (
+                            {clinicians.map((clinician) => (
                               <button
                                 key={clinician.id}
-                                onClick={() => {
-                                  console.log(`Assigning chart ${chart.id} to ${clinician.name}`);
-                                  alert(`Chart assigned to ${clinician.name}!`);
+                                onClick={async () => {
+                                  try {
+                                    await assignChart(chart.id, clinician.id);
+                                    toast.success(`Chart assigned to ${clinician.first_name} ${clinician.last_name}!`);
+                                    loadData();
+                                  } catch (error: any) {
+                                    console.error('Error assigning chart:', error);
+                                    toast.error(error.message || 'Failed to assign chart');
+                                  }
                                 }}
                                 className="w-full text-left px-3 py-2 rounded-lg hover:bg-[#f8fafc] transition-colors text-sm"
                               >
                                 <div className="flex items-center gap-2">
                                   <Avatar className="w-6 h-6">
                                     <AvatarFallback className="bg-gradient-to-br from-[#E0F2FE] to-[#BFDBFE] text-[#0966CC] text-xs">
-                                      {clinician.name.split(' ').map(n => n[0]).join('')}
+                                      {clinician.first_name[0]}{clinician.last_name[0]}
                                     </AvatarFallback>
                                   </Avatar>
                                   <div>
-                                    <p className="text-[#0f172a]">{clinician.name}</p>
-                                    <p className="text-xs text-[#64748b]">{clinician.assignedCharts} charts</p>
+                                    <p className="text-[#0f172a]">{clinician.first_name} {clinician.last_name}</p>
+                                    <p className="text-xs text-[#64748b]">{clinician.active_chart_count} charts</p>
                                   </div>
                                 </div>
                               </button>
@@ -608,11 +729,9 @@ export default function SchedulerDashboard({ navigation }: Props) {
 
   // Scan Documents Tab
   const renderScanTab = () => {
-    // Mock data for scan context
-    const lastScanTime = new Date('2025-11-05T14:14:00');
-    const unassignedDocs: number = 8;
-    const ocrProcessingDocs: number = 2;
-    const failedUploadDocs: number = 1;
+    // Calculate document status from actual stats
+    const totalDocs = stats.chartsWithDocuments;
+    const hasDocuments = totalDocs > 0;
     
     return (
       <div className="space-y-6">
@@ -638,28 +757,22 @@ export default function SchedulerDashboard({ navigation }: Props) {
         <div className="bg-white rounded-xl border border-[#e2e8f0] p-4">
           <p className="text-sm text-[#64748b] mb-3">Document Status</p>
           <div className="flex flex-wrap gap-2">
-            {unassignedDocs > 0 && (
-              <Badge className="bg-[#FEF3C7] text-[#F59E0B] border-[#FDE68A]">
-                <AlertCircle className="w-3 h-3 mr-1" />
-                {unassignedDocs} Pending Assignment
-              </Badge>
-            )}
-            {ocrProcessingDocs > 0 && (
+            {stats.newDocsToday > 0 && (
               <Badge className="bg-[#E0F2FE] text-[#0966CC] border-[#BFDBFE]">
-                <Scan className="w-3 h-3 mr-1" />
-                {ocrProcessingDocs} OCR Processing
+                <FileText className="w-3 h-3 mr-1" />
+                {stats.newDocsToday} New Today
               </Badge>
             )}
-            {failedUploadDocs > 0 && (
-              <Badge className="bg-[#FEE2E2] text-[#DC2626] border-[#FECACA]">
-                <AlertCircle className="w-3 h-3 mr-1" />
-                {failedUploadDocs} Upload Issue
-              </Badge>
-            )}
-            {unassignedDocs === 0 && ocrProcessingDocs === 0 && failedUploadDocs === 0 && (
+            {stats.chartsWithDocuments > 0 && (
               <Badge className="bg-[#D1FAE5] text-[#10B981] border-[#A7F3D0]">
                 <CheckCircle2 className="w-3 h-3 mr-1" />
-                All docs processed
+                {stats.chartsWithDocuments} Charts with Docs
+              </Badge>
+            )}
+            {!hasDocuments && (
+              <Badge className="bg-[#F1F5F9] text-[#64748b] border-[#E2E8F0]">
+                <AlertCircle className="w-3 h-3 mr-1" />
+                No documents yet
               </Badge>
             )}
           </div>
@@ -669,10 +782,7 @@ export default function SchedulerDashboard({ navigation }: Props) {
         <div className="space-y-3">
           {/* Camera Scan */}
           <button 
-            onClick={() => {
-              console.log('Opening camera scan');
-              alert('Camera scan would open here');
-            }}
+            onClick={handleQuickCameraScan}
             className="w-full bg-white rounded-xl border-2 border-[#e2e8f0] p-6 hover:border-[#F59E0B] hover:shadow-md transition-all text-left group"
           >
             <div className="flex items-start gap-4">
@@ -683,7 +793,7 @@ export default function SchedulerDashboard({ navigation }: Props) {
                 <h4 className="text-lg text-[#0f172a] mb-1">Camera Scan</h4>
                 <p className="text-sm text-[#64748b] mb-2">Scan paper docs using device camera</p>
                 <p className="text-xs text-[#94a3b8]">
-                  Last scan: {lastScanTime.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} {lastScanTime.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })}
+                  Best for discharge summaries, medical records, and insurance cards
                 </p>
               </div>
               <ChevronRight className="w-5 h-5 text-[#cbd5e1] flex-shrink-0" />
@@ -692,10 +802,7 @@ export default function SchedulerDashboard({ navigation }: Props) {
 
           {/* Import File */}
           <button 
-            onClick={() => {
-              console.log('Opening file import');
-              alert('File import would open here');
-            }}
+            onClick={handleQuickFileImport}
             className="w-full bg-white rounded-xl border-2 border-dashed border-[#e2e8f0] p-6 hover:border-[#F59E0B] hover:bg-[#FFFBEB] hover:shadow-md transition-all text-left group"
           >
             <div className="flex items-start gap-4">
@@ -708,50 +815,6 @@ export default function SchedulerDashboard({ navigation }: Props) {
                 <div className="flex flex-col gap-1">
                   <p className="text-xs text-[#94a3b8]">Supports: PDF, JPG, PNG, HEIC</p>
                   <p className="text-xs text-[#0966CC] italic">Drop files here or click to browse</p>
-                </div>
-              </div>
-              <ChevronRight className="w-5 h-5 text-[#cbd5e1] flex-shrink-0" />
-            </div>
-          </button>
-
-          {/* Document Library */}
-          <button 
-            onClick={() => {
-              console.log('Opening document library');
-              alert('Document library would open here');
-            }}
-            className="w-full bg-white rounded-xl border-2 border-[#e2e8f0] p-6 hover:border-[#F59E0B] hover:shadow-md transition-all text-left group"
-          >
-            <div className="flex items-start gap-4">
-              <div className="w-14 h-14 rounded-xl bg-[#D1FAE5] flex items-center justify-center flex-shrink-0 group-hover:scale-110 transition-transform">
-                <FileText className="w-7 h-7 text-[#10B981]" />
-              </div>
-              <div className="flex-1">
-                <h4 className="text-lg text-[#0f172a] mb-1">Document Library</h4>
-                <p className="text-sm text-[#64748b] mb-2">See all scanned files & match to patients</p>
-                <div className="flex flex-wrap items-center gap-3 text-xs">
-                  {unassignedDocs > 0 && (
-                    <span className="text-[#F59E0B]">
-                      <span className="inline-block w-2 h-2 rounded-full bg-[#F59E0B] mr-1"></span>
-                      {unassignedDocs} unassigned docs waiting
-                    </span>
-                  )}
-                  {ocrProcessingDocs > 0 && (
-                    <>
-                      <span className="text-[#cbd5e1]">•</span>
-                      <span className="text-[#0966CC]">
-                        {ocrProcessingDocs} awaiting OCR
-                      </span>
-                    </>
-                  )}
-                  {failedUploadDocs > 0 && (
-                    <>
-                      <span className="text-[#cbd5e1]">•</span>
-                      <span className="text-[#DC2626]">
-                        {failedUploadDocs} failed upload
-                      </span>
-                    </>
-                  )}
                 </div>
               </div>
               <ChevronRight className="w-5 h-5 text-[#cbd5e1] flex-shrink-0" />
@@ -801,7 +864,7 @@ export default function SchedulerDashboard({ navigation }: Props) {
 
   // Assign Charts Tab
   const renderAssignTab = () => {
-    const unassigned = mockCharts.filter(c => !c.assignedTo);
+    const unassigned = charts.filter(c => !c.assignedTo);
 
     return (
       <div className="space-y-6">
@@ -838,13 +901,13 @@ export default function SchedulerDashboard({ navigation }: Props) {
                       <Badge className="bg-[#FEF3C7] text-[#F59E0B] border-[#FDE68A]">
                         {chart.status}
                       </Badge>
-                      {chart.documentCount > 0 && (
+                      {(chart.documentCount > 0) && (
                         <Badge variant="outline" className="border-[#E0E7FF] text-[#4F46E5] bg-[#F5F3FF]">
                           <FileText className="w-3 h-3 mr-1" />
                           {chart.documentCount} Doc{chart.documentCount !== 1 ? 's' : ''}
                         </Badge>
                       )}
-                      {chart.waitingDays && chart.waitingDays > 0 && (
+                      {(chart.waitingDays > 0) && (
                         <Badge variant="outline" className="border-[#FDE68A] text-[#D97706] bg-[#FFFBEB]">
                           <Clock className="w-3 h-3 mr-1" />
                           Waiting {chart.waitingDays}d
@@ -878,7 +941,7 @@ export default function SchedulerDashboard({ navigation }: Props) {
         <div>
           <h3 className="text-lg text-[#0f172a] mb-3">Available Clinicians</h3>
           <div className="space-y-2">
-            {mockClinicians.map((clinician) => (
+            {clinicians.map((clinician) => (
               <div
                 key={clinician.id}
                 className="bg-white rounded-xl border border-[#e2e8f0] p-4 flex items-center justify-between"
@@ -886,12 +949,12 @@ export default function SchedulerDashboard({ navigation }: Props) {
                 <div className="flex items-center gap-3">
                   <Avatar>
                     <AvatarFallback className="bg-gradient-to-br from-[#E0F2FE] to-[#BFDBFE] text-[#0966CC]">
-                      {clinician.name.split(' ').map(n => n[0]).join('')}
+                      {clinician.first_name[0]}{clinician.last_name[0]}
                     </AvatarFallback>
                   </Avatar>
                   <div>
-                    <p className="text-sm text-[#0f172a]">{clinician.name}</p>
-                    <p className="text-xs text-[#64748b]">{clinician.assignedCharts} assigned chart{clinician.assignedCharts !== 1 ? 's' : ''}</p>
+                    <p className="text-sm text-[#0f172a]">{clinician.first_name} {clinician.last_name}</p>
+                    <p className="text-xs text-[#64748b]">{clinician.active_chart_count} assigned chart{clinician.active_chart_count !== 1 ? 's' : ''}</p>
                   </div>
                 </div>
               </div>
@@ -1015,7 +1078,7 @@ export default function SchedulerDashboard({ navigation }: Props) {
                 <FileText className="w-6 h-6 text-[#F59E0B]" />
               </div>
               <div>
-                <p className="text-2xl text-[#0f172a]">{totalCharts}</p>
+                <p className="text-2xl text-[#0f172a]">{stats.totalCharts}</p>
                 <p className="text-sm text-[#64748b]">Charts Created</p>
               </div>
             </div>
@@ -1026,7 +1089,7 @@ export default function SchedulerDashboard({ navigation }: Props) {
                 <Users className="w-6 h-6 text-[#0966CC]" />
               </div>
               <div>
-                <p className="text-2xl text-[#0f172a]">{totalPatients}</p>
+                <p className="text-2xl text-[#0f172a]">{stats.totalPatients}</p>
                 <p className="text-sm text-[#64748b]">Patients Managed</p>
               </div>
             </div>
@@ -1037,7 +1100,7 @@ export default function SchedulerDashboard({ navigation }: Props) {
                 <CheckCircle2 className="w-6 h-6 text-[#10B981]" />
               </div>
               <div>
-                <p className="text-2xl text-[#0f172a]">{mockCharts.filter(c => c.assignedTo).length}</p>
+                <p className="text-2xl text-[#0f172a]">{charts.filter(c => c.assignedTo).length}</p>
                 <p className="text-sm text-[#64748b]">Charts Assigned</p>
               </div>
             </div>
@@ -1429,6 +1492,7 @@ export default function SchedulerDashboard({ navigation }: Props) {
                 <h1 className="text-xl text-[#0f172a]">
                   {activeTab === 'charts' && 'Patient Charts'}
                   {activeTab === 'scan' && 'Scan Documents'}
+                  {activeTab === 'documents' && 'Document Library'}
                   {activeTab === 'assign' && 'Assign Charts'}
                   {activeTab === 'profile' && 'My Profile'}
                   {activeTab === 'settings' && 'Settings'}
@@ -1436,6 +1500,7 @@ export default function SchedulerDashboard({ navigation }: Props) {
                 <p className="text-sm text-[#64748b]">
                   {activeTab === 'charts' && 'Create and manage patient charts'}
                   {activeTab === 'scan' && 'Scan and upload documents'}
+                  {activeTab === 'documents' && 'View and manage all documents'}
                   {activeTab === 'assign' && 'Assign charts to clinicians'}
                   {activeTab === 'profile' && 'View your profile information'}
                   {activeTab === 'settings' && 'Manage your account settings'}
@@ -1463,7 +1528,7 @@ export default function SchedulerDashboard({ navigation }: Props) {
                     <Users className="w-5 h-5 sm:w-6 sm:h-6 text-[#F59E0B]" />
                   </div>
                   <div>
-                    <p className="text-xl sm:text-2xl text-[#0f172a]">{totalPatients}</p>
+                    <p className="text-xl sm:text-2xl text-[#0f172a]">{stats.totalPatients}</p>
                     <p className="text-xs sm:text-sm text-[#64748b]">Total Patients</p>
                   </div>
                 </div>
@@ -1474,7 +1539,7 @@ export default function SchedulerDashboard({ navigation }: Props) {
                     <AlertCircle className="w-5 h-5 sm:w-6 sm:h-6 text-[#DC2626]" />
                   </div>
                   <div>
-                    <p className="text-xl sm:text-2xl text-[#0f172a]">{chartsNeedingAssignment}</p>
+                    <p className="text-xl sm:text-2xl text-[#0f172a]">{stats.unassignedCharts}</p>
                     <p className="text-xs sm:text-sm text-[#64748b]">Needs Assignment</p>
                   </div>
                 </div>
@@ -1485,7 +1550,7 @@ export default function SchedulerDashboard({ navigation }: Props) {
                     <FileText className="w-5 h-5 sm:w-6 sm:h-6 text-[#0966CC]" />
                   </div>
                   <div>
-                    <p className="text-xl sm:text-2xl text-[#0f172a]">{newDocsToday}</p>
+                    <p className="text-xl sm:text-2xl text-[#0f172a]">{stats.newDocsToday}</p>
                     <p className="text-xs sm:text-sm text-[#64748b]">New Docs Today</p>
                   </div>
                 </div>
@@ -1496,8 +1561,8 @@ export default function SchedulerDashboard({ navigation }: Props) {
                     <Clock className="w-5 h-5 sm:w-6 sm:h-6 text-[#10B981]" />
                   </div>
                   <div>
-                    <p className="text-xl sm:text-2xl text-[#0f172a]">{avgAssignmentTime}h</p>
-                    <p className="text-xs sm:text-sm text-[#64748b]">Avg Assignment</p>
+                    <p className="text-xl sm:text-2xl text-[#0f172a]">{charts.length}</p>
+                    <p className="text-xs sm:text-sm text-[#64748b]">Total Charts</p>
                   </div>
                 </div>
               </div>
@@ -1507,6 +1572,7 @@ export default function SchedulerDashboard({ navigation }: Props) {
           {/* Tab Content */}
           {activeTab === 'charts' && renderChartsTab()}
           {activeTab === 'scan' && renderScanTab()}
+          {activeTab === 'documents' && <DocumentLibrary />}
           {activeTab === 'assign' && renderAssignTab()}
           {activeTab === 'profile' && <SchedulerProfile navigation={navigation} />}
           {activeTab === 'settings' && <SchedulerSettings navigation={navigation} onNavigateToProfile={() => handleTabChange('profile')} />}
@@ -1526,12 +1592,22 @@ export default function SchedulerDashboard({ navigation }: Props) {
           </DialogHeader>
           <div className="space-y-4 py-4">
             <div>
-              <Label htmlFor="patient-name">Patient Name *</Label>
+              <Label htmlFor="patient-first-name">First Name *</Label>
               <Input
-                id="patient-name"
-                value={newChart.patientName}
-                onChange={(e) => setNewChart({ ...newChart, patientName: e.target.value })}
-                placeholder="John Doe"
+                id="patient-first-name"
+                value={newChart.first_name}
+                onChange={(e) => setNewChart({ ...newChart, first_name: e.target.value })}
+                placeholder="John"
+                className="mt-2 h-12 rounded-xl border-2 border-[#e2e8f0]"
+              />
+            </div>
+            <div>
+              <Label htmlFor="patient-last-name">Last Name *</Label>
+              <Input
+                id="patient-last-name"
+                value={newChart.last_name}
+                onChange={(e) => setNewChart({ ...newChart, last_name: e.target.value })}
+                placeholder="Doe"
                 className="mt-2 h-12 rounded-xl border-2 border-[#e2e8f0]"
               />
             </div>
@@ -1540,8 +1616,8 @@ export default function SchedulerDashboard({ navigation }: Props) {
               <Input
                 id="patient-dob"
                 type="date"
-                value={newChart.patientDob}
-                onChange={(e) => setNewChart({ ...newChart, patientDob: e.target.value })}
+                value={newChart.date_of_birth}
+                onChange={(e) => setNewChart({ ...newChart, date_of_birth: e.target.value })}
                 className="mt-2 h-12 rounded-xl border-2 border-[#e2e8f0]"
               />
             </div>
@@ -1549,9 +1625,9 @@ export default function SchedulerDashboard({ navigation }: Props) {
               <Label htmlFor="patient-address">Address (Optional)</Label>
               <Input
                 id="patient-address"
-                value={newChart.patientAddress}
-                onChange={(e) => setNewChart({ ...newChart, patientAddress: e.target.value })}
-                placeholder="123 Main St, City, State"
+                value={newChart.address_line1}
+                onChange={(e) => setNewChart({ ...newChart, address_line1: e.target.value })}
+                placeholder="123 Main St"
                 className="mt-2 h-12 rounded-xl border-2 border-[#e2e8f0]"
               />
             </div>
@@ -1559,8 +1635,8 @@ export default function SchedulerDashboard({ navigation }: Props) {
               <Label htmlFor="patient-phone">Phone Number (Optional)</Label>
               <Input
                 id="patient-phone"
-                value={newChart.patientPhone}
-                onChange={(e) => setNewChart({ ...newChart, patientPhone: e.target.value })}
+                value={newChart.phone}
+                onChange={(e) => setNewChart({ ...newChart, phone: e.target.value })}
                 placeholder="555-1234"
                 className="mt-2 h-12 rounded-xl border-2 border-[#e2e8f0]"
               />
@@ -1610,9 +1686,9 @@ export default function SchedulerDashboard({ navigation }: Props) {
                     <SelectValue placeholder="Choose a clinician" />
                   </SelectTrigger>
                   <SelectContent>
-                    {mockClinicians.map((clinician) => (
-                      <SelectItem key={clinician.id} value={clinician.name}>
-                        {clinician.name} ({clinician.assignedCharts} charts)
+                    {clinicians.map((clinician) => (
+                      <SelectItem key={clinician.id} value={clinician.id}>
+                        {clinician.first_name} {clinician.last_name} ({clinician.active_chart_count} charts)
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -1637,6 +1713,78 @@ export default function SchedulerDashboard({ navigation }: Props) {
             >
               <Send className="w-4 h-4 mr-2" />
               Assign Chart
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Patient Selection Modal for Document Upload */}
+      <Dialog open={isPatientSelectionOpen} onOpenChange={setIsPatientSelectionOpen}>
+        <DialogContent className="max-w-2xl max-h-[80vh] flex flex-col">
+          <DialogHeader>
+            <DialogTitle>Select Patient for Document</DialogTitle>
+            <DialogDescription>
+              {uploadMethod === 'camera' 
+                ? 'Select which patient chart to attach the scanned document to' 
+                : `Select which patient chart to attach ${pendingFiles.length} file(s) to`}
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="flex-1 overflow-y-auto">
+            {uploading ? (
+              <div className="flex items-center justify-center p-8">
+                <Loader2 className="w-8 h-8 text-[#F59E0B] animate-spin" />
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {charts.map((chart) => (
+                  <button
+                    key={chart.id}
+                    onClick={() => handlePatientSelected(chart.id)}
+                    className="w-full text-left p-4 rounded-xl border-2 border-[#e2e8f0] hover:border-[#F59E0B] hover:bg-[#FFFBEB] transition-all"
+                  >
+                    <div className="flex items-start justify-between">
+                      <div>
+                        <h4 className="text-base font-medium text-[#0f172a]">
+                          {chart.patientName}
+                        </h4>
+                        <p className="text-sm text-[#64748b] mt-1">
+                          DOB: {new Date(chart.patientDob).toLocaleDateString('en-US', { 
+                            month: 'short', 
+                            day: 'numeric', 
+                            year: 'numeric' 
+                          })}
+                        </p>
+                        <p className="text-xs text-[#94a3b8] mt-1">
+                          {chart.documentCount} document{chart.documentCount !== 1 ? 's' : ''}
+                        </p>
+                      </div>
+                      <ChevronRight className="w-5 h-5 text-[#cbd5e1]" />
+                    </div>
+                  </button>
+                ))}
+                
+                {charts.length === 0 && (
+                  <div className="text-center p-8 text-[#64748b]">
+                    <p>No patient charts available.</p>
+                    <p className="text-sm mt-2">Create a chart first to upload documents.</p>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+          
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setIsPatientSelectionOpen(false);
+                setPendingFiles([]);
+                setUploadMethod(null);
+              }}
+              disabled={uploading}
+            >
+              Cancel
             </Button>
           </DialogFooter>
         </DialogContent>

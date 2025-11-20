@@ -1,6 +1,6 @@
 //allows functional components to manage and update state; 
 // represents data that can change over time and trigger re-renders of a component
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   Building2,
   Users,
@@ -107,6 +107,16 @@ import { motion } from 'motion/react';
 import ClinicianDetailView from './ClinicianDetailView';
 import AgencyPatientsView from './AgencyPatientsView';
 import AgencyUsersView from './AgencyUsersView';
+import {
+  fetchAllChartsForAdmin,
+  fetchAllUsers,
+  getAgencyAdminStats,
+  approveChart,
+  rejectChart,
+  bulkApproveCharts,
+  archiveChart,
+} from '../../services/agencyAdminService';
+import { fetchAllPatients } from '../../services/schedulerService';
 
 //handle navigation and screen transitions
 interface Props {
@@ -328,7 +338,7 @@ const mockClinicians: Clinician[] = [
 //mock data ends here 
 
 export default function AgencyAdminDashboard({ navigation }: Props) {
-  const { logout } = useAuth();
+  const { logout, user } = useAuth();
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<TabType>('charts');
   const [searchQuery, setSearchQuery] = useState('');
@@ -346,7 +356,23 @@ export default function AgencyAdminDashboard({ navigation }: Props) {
   const [reassignClinician, setReassignClinician] = useState('');
   const [timeframe, setTimeframe] = useState<'7d' | '30d' | 'ytd'>('7d');
   const [lastRefresh, setLastRefresh] = useState(new Date());
-  const [selectedClinician, setSelectedClinician] = useState<Clinician | null>(null);
+  const [selectedClinicianId, setSelectedClinicianId] = useState<string | null>(null);
+  
+  // Real data state
+  const [charts, setCharts] = useState<any[]>([]);
+  const [patients, setPatients] = useState<any[]>([]);
+  const [users, setUsers] = useState<any[]>([]);
+  const [tenantName, setTenantName] = useState('Loading...');
+  const [loading, setLoading] = useState(true);
+  const [stats, setStats] = useState({
+    totalUsers: 0,
+    activeUsers: 0,
+    totalCharts: 0,
+    pendingReviewCharts: 0,
+    needsReverificationCharts: 0,
+    deliveredCharts: 0,
+    totalPatients: 0,
+  });
   
   // Profile dialog states
   const [mfaEnabled, setMfaEnabled] = useState(true);
@@ -371,18 +397,124 @@ export default function AgencyAdminDashboard({ navigation }: Props) {
     phone: '',
   });
 
-  // Calculate stats -> needs real data integration
-  const totalPatients = mockPatients.length;
-  const totalCharts = mockCharts.length;
-  const pendingReview = mockCharts.filter(c => c.status === 'Pending Review').length;
-  const verifiedCharts = mockCharts.filter(c => c.status === 'Verified').length;
-  const activeCharts = mockCharts.filter(c => c.status === 'Active').length;
-  const deliveredCharts = mockCharts.filter(c => c.status === 'Delivered').length;
-  const archivedCharts = mockCharts.filter(c => c.status === 'Archived').length;
-  const needsReverification = mockCharts.filter(c => c.status === 'Needs Reverification').length;
-  const pendingOver48h = mockCharts.filter(c => c.status === 'Pending Review' && c.daysOld && c.daysOld > 2).length;
-  const chartsToday = mockCharts.filter(c => c.createdDate === '2025-01-18').length;
-  const avgTurnaroundTime = 2.3;
+  // Load data on mount
+  useEffect(() => {
+    if (user?.tenant_id) {
+      loadData();
+    }
+  }, [user?.tenant_id]);
+
+  const loadData = useCallback(async () => {
+    if (!user?.tenant_id) return;
+    
+    setLoading(true);
+    try {
+      // Fetch tenant info
+      const { supabaseClient } = await import('../../lib/supabase');
+      const { data: tenantData } = await supabaseClient
+        .from('tenants')
+        .select('name')
+        .eq('id', user.tenant_id)
+        .single();
+      
+      if (tenantData) {
+        setTenantName(tenantData.name);
+      }
+
+      const [chartsData, patientsData, usersData, statsData] = await Promise.all([
+        fetchAllChartsForAdmin(user.tenant_id),
+        fetchAllPatients(user.tenant_id),
+        fetchAllUsers(user.tenant_id),
+        getAgencyAdminStats(user.tenant_id),
+      ]);
+
+      setCharts(chartsData);
+      setPatients(patientsData);
+      setUsers(usersData);
+      setStats(statsData);
+      setLastRefresh(new Date());
+    } catch (error) {
+      console.error('Error loading agency admin data:', error);
+      toast.error('Failed to load dashboard data');
+    } finally {
+      setLoading(false);
+    }
+  }, [user?.tenant_id]);
+
+  // Transform charts to UI format
+  const transformedCharts = charts.map(chart => {
+    const createdDate = new Date(chart.created_at);
+    const daysOld = Math.floor((new Date().getTime() - createdDate.getTime()) / (1000 * 60 * 60 * 24));
+    
+    return {
+      id: chart.id,
+      patientName: `${chart.patient?.first_name || ''} ${chart.patient?.last_name || ''}`.trim(),
+      patientDob: chart.patient?.date_of_birth || '',
+      status: chart.status === 'verified_ready' ? 'Verified' :
+              chart.status === 'delivered_locked' ? 'Delivered' :
+              chart.status === 'needs_reverification' ? 'Needs Reverification' :
+              chart.status === 'archived' ? 'Archived' :
+              chart.status === 'active' ? 'Active' : 'Pending Review',
+      type: chart.source === 'bottle_scan' ? 'Bottle Scan' :
+            chart.source === 'pdf_import' ? 'PDF Import' :
+            chart.source === 'image_upload' ? 'Manual Entry' : 'Empty Chart',
+      medicationCount: chart.medication_count || 0,
+      createdDate: chart.created_at,
+      createdBy: chart.created_by_user ? `${chart.created_by_user.first_name} ${chart.created_by_user.last_name}` : 'Unknown',
+      finalizedDate: chart.finalized_at,
+      verifiedBy: chart.finalized_by_user ? `${chart.finalized_by_user.first_name} ${chart.finalized_by_user.last_name}` : undefined,
+      reviewedBy: chart.finalized_by_user ? `${chart.finalized_by_user.first_name} ${chart.finalized_by_user.last_name}` : undefined,
+      deliveryTimestamp: chart.status === 'delivered_locked' ? chart.finalized_at : undefined,
+      archivedDate: chart.status === 'archived' ? chart.updated_at : undefined,
+      lowestConfidence: undefined, // Would need to calculate from medications
+      daysOld,
+      hasLowConfidence: false, // You can add this logic based on medication confidence if needed
+    };
+  });
+
+  // Calculate stats from real data
+  const totalPatients = stats.totalPatients;
+  const totalCharts = stats.totalCharts;
+  const pendingReview = stats.pendingReviewCharts;
+  const verifiedCharts = transformedCharts.filter(c => c.status === 'Verified').length;
+  const activeCharts = transformedCharts.filter(c => c.status === 'Active').length;
+  const deliveredCharts = stats.deliveredCharts;
+  const archivedCharts = transformedCharts.filter(c => c.status === 'Archived').length;
+  const needsReverification = stats.needsReverificationCharts;
+  const pendingOver48h = transformedCharts.filter(c => c.status === 'Pending Review' && c.daysOld && c.daysOld > 2).length;
+  const today = new Date().toISOString().split('T')[0];
+  const chartsToday = transformedCharts.filter(c => c.createdDate?.startsWith(today)).length;
+  
+  // Calculate average turnaround time from verified/delivered charts
+  const completedCharts = charts.filter(c => 
+    ['verified_ready', 'delivered_locked'].includes(c.status) && c.finalized_at
+  );
+  const avgTurnaroundTime = completedCharts.length > 0
+    ? (completedCharts.reduce((sum, chart) => {
+        const created = new Date(chart.created_at).getTime();
+        const finalized = new Date(chart.finalized_at).getTime();
+        const days = (finalized - created) / (1000 * 60 * 60 * 24);
+        return sum + days;
+      }, 0) / completedCharts.length).toFixed(1)
+    : '0.0';
+
+  // Calculate total medications scanned
+  const totalMedications = charts.reduce((sum, chart) => sum + (chart.medication_count || 0), 0);
+
+  // Calculate trend based on timeframe
+  const timeframeDays = timeframe === '7d' ? 7 : timeframe === '30d' ? 30 : 365;
+  const cutoffDate = new Date();
+  cutoffDate.setDate(cutoffDate.getDate() - timeframeDays);
+  
+  const recentCharts = charts.filter(c => new Date(c.created_at) >= cutoffDate);
+  const olderCharts = charts.filter(c => new Date(c.created_at) < cutoffDate && new Date(c.created_at) >= new Date(cutoffDate.getTime() - timeframeDays * 24 * 60 * 60 * 1000));
+  
+  const trendPercentage = olderCharts.length > 0
+    ? Math.abs(((recentCharts.length - olderCharts.length) / olderCharts.length) * 100).toFixed(0)
+    : 0;
+  const trendDirection = recentCharts.length >= olderCharts.length ? '↑' : '↓';
+
+
 //logout function
   const handleLogout = () => {
     logout();
@@ -479,7 +611,7 @@ export default function AgencyAdminDashboard({ navigation }: Props) {
   };
 
   const getFilteredCharts = () => {
-    return mockCharts.filter(chart => {
+    return transformedCharts.filter(chart => {
       const matchesSearch = chart.patientName.toLowerCase().includes(searchQuery.toLowerCase()) ||
                            chart.createdBy.toLowerCase().includes(searchQuery.toLowerCase());
       const matchesStatus = statusFilter === 'all' || chart.status === statusFilter;
@@ -487,8 +619,18 @@ export default function AgencyAdminDashboard({ navigation }: Props) {
     });
   };
 
-  const getClinician = (name: string) => {
-    return mockClinicians.find(c => c.name === name);
+  const getClinician = (id: string) => {
+    const user = users.find(u => u.id === id && u.role === 'clinician');
+    if (!user) return null;
+    return {
+      id: user.id,
+      name: `${user.first_name} ${user.last_name}`,
+      email: user.email,
+      phone: user.phone,
+      patientCount: user.assigned_chart_count || 0,
+      chartCount: user.assigned_chart_count || 0,
+      assignedPatients: [], // Would need to fetch this separately if needed
+    };
   };
 
   // Sidebar Navigation Component
@@ -641,7 +783,7 @@ export default function AgencyAdminDashboard({ navigation }: Props) {
                         <Clock className="w-4 h-4 text-[#10B981]" />
                       </div>
                       <p className="text-2xl text-[#0f172a] font-semibold">{avgTurnaroundTime} days</p>
-                      <p className="text-xs text-[#10B981] mt-1">↓ 12% from last week</p>
+                      <p className="text-xs text-[#10B981] mt-1">{trendDirection} {trendPercentage}% from last period</p>
                     </div>
                   </TooltipTrigger>
                   <TooltipContent>
@@ -697,7 +839,7 @@ export default function AgencyAdminDashboard({ navigation }: Props) {
                         <p className="text-xs text-[#64748b]">Medications Scanned</p>
                         <TrendingUp className="w-4 h-4 text-[#F59E0B]" />
                       </div>
-                      <p className="text-2xl text-[#0f172a] font-semibold">243</p>
+                      <p className="text-2xl text-[#0f172a] font-semibold">{totalMedications}</p>
                       <p className="text-xs text-[#64748b] mt-1">Organization total</p>
                     </div>
                   </TooltipTrigger>
@@ -1526,11 +1668,11 @@ export default function AgencyAdminDashboard({ navigation }: Props) {
   // Clinicians Tab Content
   const renderCliniciansTab = () => {
     // If a clinician is selected, show detail view
-    if (selectedClinician) {
+    if (selectedClinicianId) {
       return (
         <ClinicianDetailView
-          clinician={selectedClinician}
-          onBack={() => setSelectedClinician(null)}
+          clinicianId={selectedClinicianId}
+          onBack={() => setSelectedClinicianId(null)}
           navigation={navigation}
         />
       );
@@ -1546,7 +1688,9 @@ export default function AgencyAdminDashboard({ navigation }: Props) {
                 <User className="w-5 h-5 text-[#10B981]" />
               </div>
               <div>
-                <p className="text-2xl text-[#0f172a] font-semibold">{mockClinicians.length}</p>
+                <p className="text-2xl text-[#0f172a] font-semibold">
+                  {users.filter(u => u.role === 'clinician').length}
+                </p>
                 <p className="text-xs font-semibold text-[#64748b]">Total Clinicians</p>
               </div>
             </div>
@@ -1558,7 +1702,9 @@ export default function AgencyAdminDashboard({ navigation }: Props) {
                 <CheckCircle2 className="w-5 h-5 text-[#0966CC]" />
               </div>
               <div>
-                <p className="text-2xl text-[#0f172a] font-semibold">{mockClinicians.length}</p>
+                <p className="text-2xl text-[#0f172a] font-semibold">
+                  {users.filter(u => u.role === 'clinician' && u.active).length}
+                </p>
                 <p className="text-xs font-semibold text-[#64748b]">Active</p>
               </div>
             </div>
@@ -1571,7 +1717,7 @@ export default function AgencyAdminDashboard({ navigation }: Props) {
               </div>
               <div>
                 <p className="text-2xl text-[#0f172a] font-semibold">
-                  {mockClinicians.reduce((sum, c) => sum + c.chartCount, 0)}
+                  {users.filter(u => u.role === 'clinician').reduce((sum, c) => sum + (c.assigned_chart_count || 0), 0)}
                 </p>
                 <p className="text-xs font-semibold text-[#64748b]">Total Charts</p>
               </div>
@@ -1581,70 +1727,81 @@ export default function AgencyAdminDashboard({ navigation }: Props) {
 
         {/* Clinicians List */}
         <div className="space-y-3">
-          {mockClinicians.map((clinician) => (
-            <div
-              key={clinician.id}
-              className="bg-white rounded-xl border border-[#e2e8f0] p-5 hover:shadow-md transition-all"
-            >
-              <div className="flex items-start justify-between gap-4 mb-4">
-                <div className="flex-1">
-                  <div className="flex items-center gap-3 mb-3">
-                    <Avatar className="w-12 h-12">
-                      <AvatarFallback className="bg-[#D1FAE5] text-[#10B981]">
-                        {clinician.name.split(' ').map(n => n[0]).join('')}
-                      </AvatarFallback>
-                    </Avatar>
-                    <div>
-                      <h3 className="text-lg text-[#0f172a]">{clinician.name}</h3>
-                      <div className="flex items-center gap-2 text-sm text-[#64748b]">
-                        <Mail className="w-4 h-4" />
-                        <span>{clinician.email}</span>
-                      </div>
-                      {clinician.phone && (
+          {users.filter(u => u.role === 'clinician').map((clinician) => {
+            const clinicianName = `${clinician.first_name} ${clinician.last_name}`;
+            const clinicianInitials = `${clinician.first_name[0]}${clinician.last_name[0]}`;
+            const assignedPatients = patients.filter(p => p.assigned_clinician_id === clinician.id);
+            
+            return (
+              <div
+                key={clinician.id}
+                className="bg-white rounded-xl border border-[#e2e8f0] p-5 hover:shadow-md transition-all"
+              >
+                <div className="flex items-start justify-between gap-4 mb-4">
+                  <div className="flex-1">
+                    <div className="flex items-center gap-3 mb-3">
+                      <Avatar className="w-12 h-12">
+                        <AvatarFallback className="bg-[#D1FAE5] text-[#10B981]">
+                          {clinicianInitials}
+                        </AvatarFallback>
+                      </Avatar>
+                      <div>
+                        <h3 className="text-lg text-[#0f172a]">{clinicianName}</h3>
                         <div className="flex items-center gap-2 text-sm text-[#64748b]">
-                          <Phone className="w-4 h-4" />
-                          <span>{clinician.phone}</span>
+                          <Mail className="w-4 h-4" />
+                          <span>{clinician.email}</span>
                         </div>
+                        {clinician.phone_number && (
+                          <div className="flex items-center gap-2 text-sm text-[#64748b]">
+                            <Phone className="w-4 h-4" />
+                            <span>{clinician.phone_number}</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-4 text-sm text-[#64748b]">
+                      <div className="flex items-center gap-2">
+                        <Users className="w-4 h-4" />
+                        <span>{assignedPatients.length} patient{assignedPatients.length !== 1 ? 's' : ''}</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <FileText className="w-4 h-4" />
+                        <span>{clinician.assigned_chart_count || 0} chart{clinician.assigned_chart_count !== 1 ? 's' : ''}</span>
+                      </div>
+                    </div>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setSelectedClinicianId(clinician.id)}
+                    className="border-[#10B981] text-[#10B981] hover:bg-[#D1FAE5]"
+                  >
+                    <Eye className="w-4 h-4 mr-2" />
+                    View Profile
+                  </Button>
+                </div>
+
+                {/* Assigned Patients */}
+                {assignedPatients.length > 0 && (
+                  <div className="pt-3 border-t border-[#e2e8f0]">
+                    <p className="text-xs text-[#64748b] mb-2">Assigned Patients:</p>
+                    <div className="flex flex-wrap gap-2">
+                      {assignedPatients.slice(0, 5).map((patient) => (
+                        <Badge key={patient.id} variant="outline" className="text-xs">
+                          {patient.first_name} {patient.last_name}
+                        </Badge>
+                      ))}
+                      {assignedPatients.length > 5 && (
+                        <Badge variant="outline" className="text-xs">
+                          +{assignedPatients.length - 5} more
+                        </Badge>
                       )}
                     </div>
                   </div>
-                  <div className="flex flex-wrap gap-4 text-sm text-[#64748b]">
-                    <div className="flex items-center gap-2">
-                      <Users className="w-4 h-4" />
-                      <span>{clinician.patientCount} patient{clinician.patientCount !== 1 ? 's' : ''}</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <FileText className="w-4 h-4" />
-                      <span>{clinician.chartCount} chart{clinician.chartCount !== 1 ? 's' : ''}</span>
-                    </div>
-                  </div>
-                </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setSelectedClinician(clinician)}
-                  className="border-[#10B981] text-[#10B981] hover:bg-[#D1FAE5]"
-                >
-                  <Eye className="w-4 h-4 mr-2" />
-                  View Profile
-                </Button>
+                )}
               </div>
-
-              {/* Assigned Patients */}
-              {clinician.assignedPatients.length > 0 && (
-                <div className="pt-3 border-t border-[#e2e8f0]">
-                  <p className="text-xs text-[#64748b] mb-2">Assigned Patients:</p>
-                  <div className="flex flex-wrap gap-2">
-                    {clinician.assignedPatients.map((patient, idx) => (
-                      <Badge key={idx} variant="outline" className="text-xs">
-                        {patient.name}
-                      </Badge>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
     );
@@ -2375,7 +2532,7 @@ export default function AgencyAdminDashboard({ navigation }: Props) {
       {/* Desktop Sidebar */}
       <aside className="hidden md:flex md:flex-col w-64 bg-white border-r border-[#e2e8f0]">
         <div className="border-b border-[#e2e8f0] p-6">
-          <div className="mb-1 text-sm text-[#64748b]">Luminous Home Health</div>
+          <div className="mb-1 text-sm text-[#64748b]">{tenantName}</div>
           <div className="text-lg text-[#0f172a]">Agency Admin</div>
         </div>
 
@@ -2400,7 +2557,7 @@ export default function AgencyAdminDashboard({ navigation }: Props) {
         <SheetContent side="left" className="w-[280px] sm:w-[320px] p-0 flex flex-col">
           <SheetHeader className="border-b border-[#e2e8f0] p-6">
             <SheetTitle className="text-left">
-              <div className="mb-1 text-sm text-[#64748b]">Luminous Home Health</div>
+              <div className="mb-1 text-sm text-[#64748b]">{tenantName}</div>
               <div className="text-lg text-[#0f172a]">Agency Admin</div>
             </SheetTitle>
             <SheetDescription className="sr-only">
@@ -2778,11 +2935,13 @@ export default function AgencyAdminDashboard({ navigation }: Props) {
                 <SelectValue placeholder="Select clinician..." />
               </SelectTrigger>
               <SelectContent>
-                {mockClinicians.map((clinician) => (
-                  <SelectItem key={clinician.id} value={clinician.name}>
-                    {clinician.name}
-                  </SelectItem>
-                ))}
+                {users
+                  .filter(u => u.role === 'clinician')
+                  .map((clinician) => (
+                    <SelectItem key={clinician.id} value={clinician.id}>
+                      {clinician.first_name} {clinician.last_name} ({clinician.assigned_chart_count || 0} patients)
+                    </SelectItem>
+                  ))}
               </SelectContent>
             </Select>
           </div>

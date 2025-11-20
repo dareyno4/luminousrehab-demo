@@ -134,7 +134,7 @@ interface Props {
 
 type TabType = 'dashboard' | 'charts' | 'profile' | 'settings';
 type SortOption = 'newest' | 'oldest' | 'name-asc' | 'name-desc' | 'status';
-type FilterStatus = 'all' | 'Active' | 'Verified Ready' | 'Delivered (Locked)' | 'Needs Reverification' | 'Archived';
+type FilterStatus = 'all' | 'Active' | 'Verified Ready' | 'Pending Review' | 'Delivered (Locked)' | 'Needs Reverification' | 'Archived';
 
 interface Patient {
   id: string;
@@ -145,7 +145,7 @@ interface Patient {
 
 interface Chart {
   id: string;
-  status: 'Active' | 'Verified Ready' | 'Delivered (Locked)' | 'Needs Reverification' | 'Archived';
+  status: 'Active' | 'Verified Ready' | 'Pending Review' | 'Delivered (Locked)' | 'Needs Reverification' | 'Archived';
   type: 'Bottle Scan' | 'PDF Import' | 'Manual Entry';
   medicationCount: number;
   verifiedMedicationCount?: number;
@@ -160,6 +160,8 @@ const mapChartStatus = (status: string): Chart['status'] => {
       return 'Active';
     case 'verified_ready':
       return 'Verified Ready';
+    case 'pending_review':
+      return 'Pending Review';
     case 'delivered_locked':
       return 'Delivered (Locked)';
     case 'needs_reverification':
@@ -463,7 +465,7 @@ setPatients(mappedData);
         return sortDirection === 'asc' ? dateA - dateB : dateB - dateA;
       });
     } else if (sortByColumn === 'status') {
-      const statusOrder = { 'Needs Reverification': 0, 'Active': 1, 'Verified Ready': 2, 'Delivered (Locked)': 3, 'Archived': 4 };
+      const statusOrder = { 'Needs Reverification': 0, 'Active': 1, 'Verified Ready': 2, 'Pending Review': 3, 'Delivered (Locked)': 4, 'Archived': 5 };
       allCharts.sort((a, b) => {
         const orderA = statusOrder[a.chart.status] || 999;
         const orderB = statusOrder[b.chart.status] || 999;
@@ -482,7 +484,7 @@ setPatients(mappedData);
           case 'name-desc':
             return b.patient.name.localeCompare(a.patient.name);
           case 'status':
-            const statusOrder = { 'Needs Reverification': 0, 'Active': 1, 'Verified Ready': 2, 'Delivered (Locked)': 3, 'Archived': 4 };
+            const statusOrder = { 'Needs Reverification': 0, 'Active': 1, 'Verified Ready': 2, 'Pending Review': 3, 'Delivered (Locked)': 4, 'Archived': 5 };
             return (statusOrder[a.chart.status] || 999) - (statusOrder[b.chart.status] || 999);
           default:
             return 0;
@@ -1298,14 +1300,6 @@ setPatients(mappedData);
           >
             <FileUp className="w-4 h-4 mr-2" />
             Import PDF
-          </Button>
-          <Button
-            onClick={() => toast.info('Bulk review feature coming soon')}
-            variant="outline"
-            className="border-slate-200 text-slate-700 hover:bg-slate-50 shadow-sm"
-          >
-            <ClipboardCheck className="w-4 h-4 mr-2" />
-            Bulk Review
           </Button>
         </div>
 

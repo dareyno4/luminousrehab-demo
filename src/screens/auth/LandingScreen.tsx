@@ -162,31 +162,6 @@ export default function LandingScreen({ navigation }: Props) {
               </div>
             </div>
           </div>
-
-          {/* Demo Credentials Info */}
-          <div className="bg-[#f8fafc] rounded-2xl p-6 border border-[#e2e8f0]">
-            <p className="text-xs text-[#64748b] mb-3">
-              <strong className="text-[#0f172a]">Demo Credentials:</strong>
-            </p>
-            <div className="space-y-2 text-xs text-[#64748b]">
-              <div className="flex items-center justify-between">
-                <span>Clinician:</span>
-                <code className="bg-white px-2 py-1 rounded border border-[#e2e8f0]">clin.anna@hha.test</code>
-              </div>
-              <div className="flex items-center justify-between">
-                <span>Agency Admin:</span>
-                <code className="bg-white px-2 py-1 rounded border border-[#e2e8f0]">admin.qa@hha.test</code>
-              </div>
-              <div className="flex items-center justify-between">
-                <span>Scheduler:</span>
-                <code className="bg-white px-2 py-1 rounded border border-[#e2e8f0]">sched.sam@hha.test</code>
-              </div>
-              <div className="flex items-center justify-between">
-                <span>Super Admin:</span>
-                <code className="bg-white px-2 py-1 rounded border border-[#e2e8f0]">superadmin@luminousrehab.com</code>
-              </div>
-            </div>
-          </div>
         </div>
       </div>
     </div>

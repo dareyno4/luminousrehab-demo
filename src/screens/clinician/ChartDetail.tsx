@@ -25,6 +25,7 @@ import {
   RotateCcw,
   LockOpen,
   Trash2,
+  User,
 } from 'lucide-react';
 import { Badge } from '../../components/ui/badge';
 import { Button } from '../../components/ui/button';
@@ -40,7 +41,7 @@ import { Screen, NavigationParams } from '../../App';
 import { supabaseClient } from '../../lib/supabase';
 import { useAuth } from '../../context/AuthContext';
 import { useEffect, useRef, useCallback } from 'react';
-import { uploadDocument, deleteDocument } from '../../services/documentService';
+import { uploadDocument, deleteDocument, getSignedDocumentUrl } from '../../services/documentService';
 import MedicationBarcodeScanner, { ScannedMedication } from '../../components/MedicationBarcodeScanner';
 import MedicationOCRScanner from '../../components/MedicationOCRScanner';
 import type { MedicationInfo } from '../../utils/ocrService';
@@ -94,12 +95,14 @@ interface DocumentRow {
 
 const mapChartStatus = (
   status: string
-): 'Active' | 'Verified Ready' | 'Delivered (Locked)' | 'Needs Reverification' | 'Archived' => {
+): 'Active' | 'Verified Ready' | 'Pending Review' | 'Delivered (Locked)' | 'Needs Reverification' | 'Archived' => {
   switch (status) {
     case 'active':
       return 'Active';
     case 'verified_ready':
       return 'Verified Ready';
+    case 'pending_review':
+      return 'Pending Review';
     case 'delivered_locked':
       return 'Delivered (Locked)';
     case 'needs_reverification':
@@ -116,6 +119,10 @@ export default function ChartDetail({ navigation, route }: Props) {
   const [showDeliveryModal, setShowDeliveryModal] = useState(false);
   const [showAddMedicationModal, setShowAddMedicationModal] = useState(false);
   const [showAttachDocumentModal, setShowAttachDocumentModal] = useState(false);
+  const [viewingDocument, setViewingDocument] = useState<DocumentRow | null>(null);
+  const [isViewModalOpen, setIsViewModalOpen] = useState(false);
+  const [signedUrl, setSignedUrl] = useState<string>('');
+  const [loadingSignedUrl, setLoadingSignedUrl] = useState(false);
   const [showFaxModal, setShowFaxModal] = useState(false);
   const [showEmailModal, setShowEmailModal] = useState(false);
   // Scanning modals
@@ -138,6 +145,8 @@ export default function ChartDetail({ navigation, route }: Props) {
   const [documents, setDocuments] = useState<DocumentRow[]>([]);
   const [loadingDocs, setLoadingDocs] = useState(false);
   const [docsError, setDocsError] = useState<string | null>(null);
+  const [reviewNotes, setReviewNotes] = useState<any[]>([]);
+  const [loadingReviewNotes, setLoadingReviewNotes] = useState(false);
 
   const { patientId, chartId, prefillMedications } = route.params;
   const { user } = useAuth();
@@ -166,7 +175,7 @@ const fileInputRef = useRef<HTMLInputElement | null>(null);
         .from('documents')
         .select('*')
         .eq('chart_id', chartId)
-        .order('created_at', { ascending: false });
+        .order('created_at', { ascending: false});
 
       if (docsError) throw docsError;
       setDocuments(docs || []);
@@ -177,9 +186,52 @@ const fileInputRef = useRef<HTMLInputElement | null>(null);
     }
   }, [chartId]);
 
+  // Load review notes for charts that need reverification
+  const loadReviewNotes = useCallback(async () => {
+    if (!chartId) return;
+    setLoadingReviewNotes(true);
+    try {
+      const { data: notes, error } = await supabaseClient
+        .from('chart_review_notes')
+        .select(`
+          *,
+          reviewer:users!chart_review_notes_created_by_fkey (
+            first_name,
+            last_name,
+            email
+          )
+        `)
+        .eq('chart_id', chartId)
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+      setReviewNotes(notes || []);
+    } catch (error: any) {
+      console.error('Failed to load review notes:', error);
+    } finally {
+      setLoadingReviewNotes(false);
+    }
+  }, [chartId]);
+
+  const handleViewDocument = async (doc: DocumentRow) => {
+    setViewingDocument(doc);
+    setIsViewModalOpen(true);
+    setLoadingSignedUrl(true);
+    
+    try {
+      const url = await getSignedDocumentUrl(doc.file_url);
+      setSignedUrl(url);
+    } catch (error) {
+      console.error('Error getting signed URL:', error);
+      setSignedUrl(doc.file_url); // Fallback to original URL
+    } finally {
+      setLoadingSignedUrl(false);
+    }
+  };
+
 
   const [chartStatus, setChartStatus] = useState<
-    'Active' | 'Verified Ready' | 'Delivered (Locked)' | 'Needs Reverification' | 'Archived'
+    'Active' | 'Verified Ready' | 'Pending Review' | 'Delivered (Locked)' | 'Needs Reverification' | 'Archived'
   >('Active');
 
   const [medications, setMedications] = useState<Medication[]>([]);
@@ -188,7 +240,7 @@ const fileInputRef = useRef<HTMLInputElement | null>(null);
 
 
   const hasUnverifiedMeds = medications.some(med => !med.isVerified);
-  const isLocked = chartStatus === 'Delivered (Locked)';
+  const isLocked = chartStatus === 'Delivered (Locked)' || chartStatus === 'Pending Review';
 
   const [deletingMedicationId, setDeletingMedicationId] = useState<string | null>(null);
   
@@ -201,6 +253,8 @@ const fileInputRef = useRef<HTMLInputElement | null>(null);
   const getStatusBadge = () => {
     if (chartStatus === 'Delivered (Locked)') {
       return { icon: '🔒', text: 'Delivered / Locked', classes: 'bg-[#E0E7FF] text-[#4F46E5] border-0' };
+    } else if (chartStatus === 'Pending Review') {
+      return { icon: '⏳', text: 'Pending Admin Review', classes: 'bg-[#FEF3C7] text-[#F59E0B] border-0' };
     } else if (hasUnverifiedMeds) {
       return { icon: '⚠️', text: 'Re-Verification Needed', classes: 'bg-[#FEF3C7] text-[#92400E] border-0' };
     } else if (verificationProgress === 100) {
@@ -247,6 +301,11 @@ const fileInputRef = useRef<HTMLInputElement | null>(null);
 
         // Load documents list
         loadDocuments();
+
+        // Load review notes if chart needs reverification
+        if (chartRow.status === 'needs_reverification') {
+          loadReviewNotes();
+        }
 
         // 3) Medications
         const { data: medsRows, error: medsError } = await supabaseClient
@@ -544,7 +603,7 @@ const handleFileSelected = async (file: File) => {
       alert("Chart ID is missing");
       return;
     }
-      const newDoc = await uploadDocument(file, chartId, user.tenant_id);
+      const newDoc = await uploadDocument(file, chartId, user.tenant_id, user.id);
       // update UI immediately
     setDocuments(prev => [...prev, newDoc]);
     alert("Document uploaded!");
@@ -812,6 +871,61 @@ const handleFileSelected = async (file: File) => {
               </div>
             )}
 
+            {/* Review Notes - Chart Needs Reverification */}
+            {chartStatus === 'Needs Reverification' && reviewNotes.length > 0 && (
+              <div className="bg-gradient-to-br from-red-50 to-red-100 border-2 border-red-300 rounded-2xl shadow-sm p-5">
+                <div className="flex items-start gap-3 mb-3">
+                  <div className="w-10 h-10 rounded-xl bg-red-600 flex items-center justify-center flex-shrink-0">
+                    <AlertCircle className="w-5 h-5 text-white" />
+                  </div>
+                  <div className="flex-1">
+                    <h3 className="text-red-900 font-semibold text-lg mb-1">Chart Returned for Corrections</h3>
+                    <p className="text-sm text-red-800">
+                      This chart has been reviewed by an admin and requires changes. Please review the feedback below and make necessary corrections.
+                    </p>
+                  </div>
+                </div>
+                
+                <div className="space-y-3">
+                  {reviewNotes.map((note, index) => (
+                    <div key={note.id || index} className="bg-white rounded-xl p-4 border border-red-200">
+                      <div className="flex items-start justify-between gap-3 mb-2">
+                        <div className="flex items-center gap-2">
+                          <div className="w-8 h-8 rounded-full bg-red-100 flex items-center justify-center">
+                            <User className="w-4 h-4 text-red-600" />
+                          </div>
+                          <div>
+                            <p className="text-sm font-semibold text-slate-900">
+                              {note.reviewer ? `${note.reviewer.first_name} ${note.reviewer.last_name}` : 'Admin'}
+                            </p>
+                            <p className="text-xs text-slate-500">
+                              {new Date(note.created_at).toLocaleDateString('en-US', { 
+                                month: 'short', 
+                                day: 'numeric', 
+                                year: 'numeric',
+                                hour: '2-digit',
+                                minute: '2-digit'
+                              })}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                      <p className="text-sm text-slate-700 leading-relaxed whitespace-pre-wrap">
+                        {note.note}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="mt-4 pt-4 border-t border-red-200">
+                  <p className="text-xs text-red-800 flex items-center gap-2">
+                    <Info className="w-4 h-4" />
+                    After making corrections, verify all medications and submit for review again.
+                  </p>
+                </div>
+              </div>
+            )}
+
             {/* Medications Section */}
             <div className="bg-white rounded-2xl shadow-sm p-6">
               <div className="flex items-center justify-between mb-3">
@@ -1023,14 +1137,15 @@ const handleFileSelected = async (file: File) => {
                           </p>
                         </div>
                         <div className="flex items-center gap-2">
-                          <a
-                            href={doc.file_url}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="text-sm text-[#0966CC] hover:text-[#0C4A6E] underline"
+                          <Button
+                            onClick={() => handleViewDocument(doc)}
+                            variant="ghost"
+                            size="sm"
+                            className="text-[#0966CC] hover:text-[#0C4A6E] hover:bg-[#E0F2FE]"
                           >
+                            <Eye className="w-4 h-4 mr-1" />
                             View
-                          </a>
+                          </Button>
                           {!isLocked && (
                             <Button
                               onClick={() => handleDeleteDocument(doc)}
@@ -1535,6 +1650,42 @@ const handleFileSelected = async (file: File) => {
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
+
+        {/* Document View Modal */}
+        <Dialog open={isViewModalOpen} onOpenChange={setIsViewModalOpen}>
+          <DialogContent className="max-w-4xl max-h-[90vh] flex flex-col">
+            <DialogHeader>
+              <DialogTitle>{viewingDocument?.file_name || 'Document'}</DialogTitle>
+              <DialogDescription>
+                {viewingDocument?.file_type} • Uploaded {viewingDocument?.created_at ? new Date(viewingDocument.created_at).toLocaleString() : ''}
+              </DialogDescription>
+            </DialogHeader>
+            <div className="flex-1 overflow-auto">
+              {loadingSignedUrl ? (
+                <div className="flex items-center justify-center p-8">
+                  <div className="text-center">
+                    <RefreshCw className="w-8 h-8 text-[#F59E0B] animate-spin mx-auto mb-2" />
+                    <p className="text-sm text-[#64748b]">Loading document...</p>
+                  </div>
+                </div>
+              ) : viewingDocument?.file_type?.includes('pdf') ? (
+                <iframe
+                  src={signedUrl}
+                  className="w-full h-[600px] border-0 rounded-lg"
+                  title={viewingDocument.file_name}
+                />
+              ) : (
+                <div className="flex items-center justify-center p-4">
+                  <img
+                    src={signedUrl}
+                    alt={viewingDocument?.file_name || 'Document'}
+                    className="max-w-full max-h-[600px] object-contain rounded-lg"
+                  />
+                </div>
+              )}
+            </div>
+          </DialogContent>
+        </Dialog>
       </div>
     </TooltipProvider>
   );

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   ArrowLeft,
   CheckCircle2,
@@ -12,6 +12,7 @@ import {
   MoreVertical,
   Archive,
   LockOpen,
+  Clock,
 } from 'lucide-react';
 import { Badge } from '../../components/ui/badge';
 import { Button } from '../../components/ui/button';
@@ -21,6 +22,9 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Label } from '../../components/ui/label';
 import { Textarea } from '../../components/ui/textarea';
 import { Screen, NavigationParams } from '../../App';
+import { supabaseClient } from '../../lib/supabase';
+import { approveChart, rejectChart } from '../../services/agencyAdminService';
+import { useAuth } from '../../context/AuthContext';
 
 interface Props {
   navigation: {
@@ -34,146 +38,306 @@ interface Props {
 
 interface Medication {
   id: string;
-  drugName: string;
+  drug_name: string;
   strength: string;
   route: string;
   frequency: string;
   prescriber: string;
-  scannedDate: string;
-  confidence: number;
-  isVerified: boolean;
+  created_at: string;
+  is_verified: boolean;
   notes?: string;
 }
 
+interface ChartDocument {
+  id: string;
+  file_name: string;
+  file_url: string;
+  created_at: string;
+  file_type: string;
+  ocr_status?: string;
+}
+
+interface ChartData {
+  id: string;
+  patient_id: string;
+  status: string;
+  source: string;
+  created_at: string;
+  finalized_at: string | null;
+  created_by: string;
+  finalized_by: string | null;
+  patient: {
+    first_name: string;
+    last_name: string;
+    date_of_birth: string;
+  };
+  created_by_user: {
+    first_name: string;
+    last_name: string;
+  } | null;
+  finalized_by_user: {
+    first_name: string;
+    last_name: string;
+  } | null;
+}
+
 export default function ChartDetailView({ navigation, route }: Props) {
-  const { chartId, patientName, mode } = route.params;
+  const { chartId, mode } = route.params;
+  const { user } = useAuth();
   const [showApprovalModal, setShowApprovalModal] = useState(false);
   const [showReverificationModal, setShowReverificationModal] = useState(false);
   const [reviewNotes, setReviewNotes] = useState('');
-  const [chartStatus, setChartStatus] = useState<'Active' | 'Verified' | 'Delivered' | 'Pending Review' | 'Archived'>('Verified');
   const [showArchiveConfirmation, setShowArchiveConfirmation] = useState(false);
   const [showUnarchiveConfirmation, setShowUnarchiveConfirmation] = useState(false);
   const [showUnlockConfirmation, setShowUnlockConfirmation] = useState(false);
-
-  // Mock data - in real app, this would come from database based on chartId
-  const patient = {
-    name: patientName || 'Jane Test',
-    dob: '12/31/1969',
-  };
-
-  const chartInfo = {
-    type: 'Bottle Scan',
-    createdBy: 'Anna Clinician',
-    createdDate: '1/17/2025',
-    finalizedDate: '1/17/2025',
-  };
-
-  const medications: Medication[] = [
-    {
-      id: '1',
-      drugName: 'Metformin',
-      strength: '500 mg',
-      route: 'PO',
-      frequency: 'BID',
-      prescriber: 'Dr. Gamma',
-      scannedDate: '1/17/2025',
-      confidence: 92,
-      isVerified: true,
-    },
-    {
-      id: '2',
-      drugName: 'Lisinopril',
-      strength: '10 mg',
-      route: 'PO',
-      frequency: 'Daily',
-      prescriber: 'Dr. Smith',
-      scannedDate: '1/17/2025',
-      confidence: 78,
-      isVerified: true,
-    },
-  ];
-
-  const attachedDocuments = [
-    { id: '1', name: 'Medication Bottle - Metformin.jpg', uploadedDate: '1/17/2025' },
-    { id: '2', name: 'Discharge Summary.pdf', uploadedDate: '1/17/2025' },
-  ];
+  
+  const [chartData, setChartData] = useState<ChartData | null>(null);
+  const [medications, setMedications] = useState<Medication[]>([]);
+  const [documents, setDocuments] = useState<ChartDocument[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   const isReviewMode = mode === 'review';
-  const isLocked = chartStatus === 'Delivered';
-  const canApprove = chartStatus === 'Verified' || chartStatus === 'Pending Review';
+  const chartStatus = chartData?.status || 'active';
+  const isLocked = chartStatus === 'delivered_locked';
+  const canApprove = chartStatus === 'verified_ready' || chartStatus === 'pending_review';
 
-  const handleApprove = () => {
-    console.log('Approving chart:', chartId, 'Notes:', reviewNotes);
-    setShowApprovalModal(false);
-    setReviewNotes('');
-    // Update status and navigate back
-    alert('Chart approved successfully!');
-    navigation.goBack();
+  useEffect(() => {
+    loadChartData();
+  }, [chartId]);
+
+  const loadChartData = async () => {
+    try {
+      setLoading(true);
+      setError(null);
+
+      // Fetch chart data
+      const { data: chart, error: chartError } = await supabaseClient
+        .from('charts')
+        .select(`
+          *,
+          patient:patients(first_name, last_name, date_of_birth),
+          created_by_user:users!charts_created_by_fkey(first_name, last_name),
+          finalized_by_user:users!charts_finalized_by_fkey(first_name, last_name)
+        `)
+        .eq('id', chartId)
+        .single();
+
+      if (chartError) throw chartError;
+      setChartData(chart);
+
+      // Fetch medications
+      const { data: meds, error: medsError } = await supabaseClient
+        .from('medications')
+        .select('*')
+        .eq('chart_id', chartId)
+        .order('created_at', { ascending: true });
+
+      if (medsError) throw medsError;
+      setMedications(meds || []);
+
+      // Fetch documents
+      const { data: docs, error: docsError } = await supabaseClient
+        .from('documents')
+        .select('*')
+        .eq('chart_id', chartId)
+        .order('created_at', { ascending: false });
+
+      if (docsError) throw docsError;
+      setDocuments(docs || []);
+
+    } catch (err: any) {
+      console.error('Error loading chart data:', err);
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const handleRequestChanges = () => {
+  const handleApprove = async () => {
+    if (!user?.id || !chartId) return;
+
+    try {
+      await approveChart(chartId, user.id);
+      setShowApprovalModal(false);
+      setReviewNotes('');
+      alert('Chart approved successfully!');
+      navigation.goBack();
+    } catch (err: any) {
+      console.error('Error approving chart:', err);
+      alert(`Failed to approve chart: ${err.message}`);
+    }
+  };
+
+  const handleRequestChanges = async () => {
     if (!reviewNotes.trim()) {
       alert('Please provide feedback notes for the clinician.');
       return;
     }
-    console.log('Requesting changes for chart:', chartId, 'Notes:', reviewNotes);
-    setShowReverificationModal(false);
-    setReviewNotes('');
-    alert('Reverification request sent to clinician!');
-    navigation.goBack();
+    if (!user?.id || !chartId) return;
+
+    try {
+      await rejectChart(chartId, reviewNotes, user.id);
+      setShowReverificationModal(false);
+      setReviewNotes('');
+      alert('Reverification request sent to clinician!');
+      navigation.goBack();
+    } catch (err: any) {
+      console.error('Error rejecting chart:', err);
+      alert(`Failed to send reverification request: ${err.message}`);
+    }
   };
 
-  const handleArchiveChart = () => {
+  const handleArchiveChart = async () => {
     setShowArchiveConfirmation(true);
   };
 
-  const confirmArchiveChart = () => {
-    setChartStatus('Archived');
-    setShowArchiveConfirmation(false);
-    alert('Chart archived successfully');
+  const confirmArchiveChart = async () => {
+    if (!chartId) return;
+
+    try {
+      const { error } = await supabaseClient
+        .from('charts')
+        .update({ status: 'archived' })
+        .eq('id', chartId);
+
+      if (error) throw error;
+
+      setShowArchiveConfirmation(false);
+      alert('Chart archived successfully');
+      await loadChartData();
+    } catch (err: any) {
+      console.error('Error archiving chart:', err);
+      alert(`Failed to archive chart: ${err.message}`);
+    }
   };
 
   const handleUnarchiveChart = () => {
     setShowUnarchiveConfirmation(true);
   };
 
-  const confirmUnarchiveChart = () => {
-    setChartStatus('Active');
-    setShowUnarchiveConfirmation(false);
-    alert('Chart restored to Active status');
+  const confirmUnarchiveChart = async () => {
+    if (!chartId) return;
+
+    try {
+      const { error } = await supabaseClient
+        .from('charts')
+        .update({ status: 'active' })
+        .eq('id', chartId);
+
+      if (error) throw error;
+
+      setShowUnarchiveConfirmation(false);
+      alert('Chart restored to Active status');
+      await loadChartData();
+    } catch (err: any) {
+      console.error('Error restoring chart:', err);
+      alert(`Failed to restore chart: ${err.message}`);
+    }
   };
 
   const handleUnlockChart = () => {
     setShowUnlockConfirmation(true);
   };
 
-  const confirmUnlockChart = () => {
-    setChartStatus('Active');
-    setShowUnlockConfirmation(false);
-    alert('Chart unlocked successfully');
-  };
+  const confirmUnlockChart = async () => {
+    if (!chartId) return;
 
-  const getConfidenceBadge = (confidence: number) => {
-    if (confidence >= 85) {
-      return (
-        <Badge className="bg-[#D1FAE5] text-[#10B981] border-[#A7F3D0]">
-          High: {confidence}%
-        </Badge>
-      );
-    } else if (confidence >= 70) {
-      return (
-        <Badge className="bg-[#FEF3C7] text-[#F59E0B] border-[#FDE68A]">
-          Medium: {confidence}%
-        </Badge>
-      );
-    } else {
-      return (
-        <Badge className="bg-[#FEE2E2] text-[#DC2626] border-[#FECACA]">
-          Low: {confidence}%
-        </Badge>
-      );
+    try {
+      const { error } = await supabaseClient
+        .from('charts')
+        .update({ 
+          status: 'active',
+          finalized_at: null,
+          finalized_by: null
+        })
+        .eq('id', chartId);
+
+      if (error) throw error;
+
+      setShowUnlockConfirmation(false);
+      alert('Chart unlocked successfully');
+      await loadChartData();
+    } catch (err: any) {
+      console.error('Error unlocking chart:', err);
+      alert(`Failed to unlock chart: ${err.message}`);
     }
   };
+
+  const mapChartStatus = (status: string): string => {
+    switch (status) {
+      case 'active': return 'Active';
+      case 'verified_ready': return 'Verified';
+      case 'pending_review': return 'Pending Review';
+      case 'delivered_locked': return 'Delivered';
+      case 'needs_reverification': return 'Needs Reverification';
+      case 'archived': return 'Archived';
+      default: return 'Active';
+    }
+  };
+
+  const getChartType = (source: string): string => {
+    switch (source) {
+      case 'bottle_scan': return 'Bottle Scan';
+      case 'pdf_import': return 'PDF Import';
+      case 'image_upload': return 'Manual Entry';
+      default: return 'Empty Chart';
+    }
+  };
+
+  const formatDate = (dateString: string | null): string => {
+    if (!dateString) return 'N/A';
+    return new Date(dateString).toLocaleDateString('en-US', {
+      month: 'numeric',
+      day: 'numeric',
+      year: 'numeric'
+    });
+  };
+
+  if (loading) {
+    return (
+      <div className="h-screen flex items-center justify-center bg-[#f8fafc]">
+        <div className="text-center">
+          <div className="w-12 h-12 border-4 border-[#0966CC] border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+          <p className="text-[#64748b]">Loading chart...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (error || !chartData) {
+    return (
+      <div className="h-screen flex items-center justify-center bg-[#f8fafc]">
+        <div className="text-center max-w-md p-6">
+          <AlertCircle className="w-12 h-12 text-red-500 mx-auto mb-4" />
+          <h2 className="text-lg text-[#0f172a] mb-2">Failed to Load Chart</h2>
+          <p className="text-[#64748b] mb-4">{error || 'Chart not found'}</p>
+          <Button onClick={() => navigation.goBack()} variant="outline">
+            Go Back
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  const patient = {
+    name: `${chartData.patient.first_name} ${chartData.patient.last_name}`,
+    dob: formatDate(chartData.patient.date_of_birth),
+  };
+
+  const chartInfo = {
+    type: getChartType(chartData.source),
+    createdBy: chartData.created_by_user 
+      ? `${chartData.created_by_user.first_name} ${chartData.created_by_user.last_name}` 
+      : 'Unknown',
+    createdDate: formatDate(chartData.created_at),
+    finalizedDate: chartData.finalized_at ? formatDate(chartData.finalized_at) : null,
+    finalizedBy: chartData.finalized_by_user
+      ? `${chartData.finalized_by_user.first_name} ${chartData.finalized_by_user.last_name}`
+      : null,
+  };
+
+  const displayStatus = mapChartStatus(chartStatus);
 
   return (
     <div className="h-screen flex flex-col bg-[#f8fafc]">
@@ -197,7 +361,7 @@ export default function ChartDetailView({ navigation, route }: Props) {
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-56">
-              {chartStatus === 'Delivered' && (
+              {chartStatus === 'delivered_locked' && (
                 <>
                   <DropdownMenuItem onClick={handleUnlockChart} className="cursor-pointer">
                     <LockOpen className="w-4 h-4 mr-2" />
@@ -210,13 +374,13 @@ export default function ChartDetailView({ navigation, route }: Props) {
                   </DropdownMenuItem>
                 </>
               )}
-              {(chartStatus === 'Active' || chartStatus === 'Verified' || chartStatus === 'Pending Review') && (
+              {(chartStatus === 'active' || chartStatus === 'verified_ready' || chartStatus === 'pending_review') && (
                 <DropdownMenuItem onClick={handleArchiveChart} className="cursor-pointer text-amber-600">
                   <Archive className="w-4 h-4 mr-2" />
                   Archive Chart
                 </DropdownMenuItem>
               )}
-              {chartStatus === 'Archived' && (
+              {chartStatus === 'archived' && (
                 <DropdownMenuItem onClick={handleUnarchiveChart} className="cursor-pointer text-green-600">
                   <RotateCcw className="w-4 h-4 mr-2" />
                   Restore to Active
@@ -229,21 +393,25 @@ export default function ChartDetailView({ navigation, route }: Props) {
         <div className="flex justify-center">
           <Badge
             className={
-              chartStatus === 'Delivered'
+              chartStatus === 'delivered_locked'
                 ? 'bg-[#E0E7FF] text-[#4F46E5] border-[#C7D2FE]'
-                : chartStatus === 'Verified'
+                : chartStatus === 'verified_ready'
                 ? 'bg-[#D1FAE5] text-[#10B981] border-[#A7F3D0]'
-                : chartStatus === 'Pending Review'
+                : chartStatus === 'pending_review'
                 ? 'bg-[#FEF3C7] text-[#F59E0B] border-[#FDE68A]'
-                : chartStatus === 'Archived'
+                : chartStatus === 'needs_reverification'
+                ? 'bg-[#FEE2E2] text-[#DC2626] border-[#FECACA]'
+                : chartStatus === 'archived'
                 ? 'bg-[#F3F4F6] text-[#6B7280] border-[#D1D5DB]'
                 : 'bg-[#DBEAFE] text-[#0966CC] border-[#BFDBFE]'
             }
           >
-            {chartStatus === 'Delivered' ? 'Delivered (Locked)' : 
-             chartStatus === 'Verified' ? 'Verified (Ready to Deliver)' : 
-             chartStatus === 'Archived' ? '🗄️ Archived' :
-             chartStatus}
+            {chartStatus === 'delivered_locked' ? (<><Lock className="w-3 h-3 mr-1" /> Delivered (Locked)</>) : 
+             chartStatus === 'verified_ready' ? (<><CheckCircle2 className="w-3 h-3 mr-1" /> Verified (Ready to Deliver)</>) : 
+             chartStatus === 'pending_review' ? (<><Clock className="w-3 h-3 mr-1" /> Pending Review</>) :
+             chartStatus === 'needs_reverification' ? (<><AlertCircle className="w-3 h-3 mr-1" /> Needs Reverification</>) :
+             chartStatus === 'archived' ? (<><Archive className="w-3 h-3 mr-1" /> Archived</>) :
+             displayStatus}
           </Badge>
         </div>
       </div>
@@ -288,6 +456,12 @@ export default function ChartDetailView({ navigation, route }: Props) {
                   <span className="text-[#0f172a]">{chartInfo.finalizedDate}</span>
                 </div>
               )}
+              {chartInfo.finalizedBy && (
+                <div>
+                  <span className="text-[#64748b]">Finalized By:</span>{' '}
+                  <span className="text-[#0f172a]">{chartInfo.finalizedBy}</span>
+                </div>
+              )}
             </div>
           </div>
 
@@ -302,28 +476,28 @@ export default function ChartDetailView({ navigation, route }: Props) {
                 <div key={med.id} className="bg-[#f8fafc] rounded-xl border border-[#e2e8f0] p-5">
                   <div className="flex items-start justify-between gap-4 mb-3">
                     <div className="flex-1">
-                      <h3 className="text-lg text-[#0f172a] mb-2">{med.drugName}</h3>
+                      <h3 className="text-lg text-[#0f172a] mb-2">{med.drug_name}</h3>
                       <div className="grid grid-cols-2 gap-3 text-sm text-[#64748b]">
                         <div>
                           <span className="text-xs text-[#94a3b8]">Strength:</span>{' '}
-                          <span className="text-[#0f172a]">{med.strength}</span>
+                          <span className="text-[#0f172a]">{med.strength || 'N/A'}</span>
                         </div>
                         <div>
                           <span className="text-xs text-[#94a3b8]">Route:</span>{' '}
-                          <span className="text-[#0f172a]">{med.route}</span>
+                          <span className="text-[#0f172a]">{med.route || 'N/A'}</span>
                         </div>
                         <div>
                           <span className="text-xs text-[#94a3b8]">Frequency:</span>{' '}
-                          <span className="text-[#0f172a]">{med.frequency}</span>
+                          <span className="text-[#0f172a]">{med.frequency || 'N/A'}</span>
                         </div>
                         <div>
                           <span className="text-xs text-[#94a3b8]">Prescriber:</span>{' '}
-                          <span className="text-[#0f172a]">{med.prescriber}</span>
+                          <span className="text-[#0f172a]">{med.prescriber || 'N/A'}</span>
                         </div>
                       </div>
                     </div>
                     <div className="flex flex-col gap-2 items-end">
-                      {med.isVerified && (
+                      {med.is_verified && (
                         <Badge className="bg-[#D1FAE5] text-[#10B981] border-[#A7F3D0]">
                           <CheckCircle2 className="w-3 h-3 mr-1" />
                           Verified
@@ -332,11 +506,9 @@ export default function ChartDetailView({ navigation, route }: Props) {
                     </div>
                   </div>
 
-                  {/* OCR Confidence Score */}
+                  {/* Created Date */}
                   <div className="flex items-center gap-3 pt-3 border-t border-[#e2e8f0]">
-                    <span className="text-sm text-[#64748b]">OCR Confidence:</span>
-                    {getConfidenceBadge(med.confidence)}
-                    <span className="text-xs text-[#94a3b8] ml-auto">Scanned: {med.scannedDate}</span>
+                    <span className="text-xs text-[#94a3b8]">Added: {formatDate(med.created_at)}</span>
                   </div>
 
                   {med.notes && (
@@ -356,16 +528,20 @@ export default function ChartDetailView({ navigation, route }: Props) {
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg text-[#0f172a]">Attached Documents</h2>
             </div>
-            {attachedDocuments.length > 0 ? (
+            {documents.length > 0 ? (
               <div className="space-y-2">
-                {attachedDocuments.map((doc) => (
+                {documents.map((doc) => (
                   <div key={doc.id} className="flex items-center gap-3 p-3 bg-[#f8fafc] rounded-lg border border-[#e2e8f0]">
                     <Paperclip className="w-4 h-4 text-[#64748b]" />
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm text-[#0f172a] truncate">{doc.name}</p>
-                      <p className="text-xs text-[#94a3b8]">Uploaded: {doc.uploadedDate}</p>
+                      <p className="text-sm text-[#0f172a] truncate">{doc.file_name}</p>
+                      <p className="text-xs text-[#94a3b8]">Uploaded: {formatDate(doc.created_at)}</p>
                     </div>
-                    <Button variant="outline" size="sm">
+                    <Button 
+                      variant="outline" 
+                      size="sm"
+                      onClick={() => window.open(doc.file_url, '_blank')}
+                    >
                       <Eye className="w-4 h-4 mr-1" />
                       View
                     </Button>
