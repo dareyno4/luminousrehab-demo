@@ -7,7 +7,7 @@
   export default defineConfig({
     plugins: [react()],
     envPrefix: 'VITE_',
-    base: '/lr-demo/', // Add this for GitHub Pages
+    base: '/luminousrehab-demo/', // Add this for GitHub Pages
     resolve: {
       extensions: ['.js', '.jsx', '.ts', '.tsx', '.json'],
       alias: {
